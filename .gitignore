@@ -1,0 +1,21 @@
+# Local agent notes / working design docs — not part of the plugin
+CLAUDE.md
+TAPEDECK-CHANGES.md
+
+# Reference material (fooyin docs, example plugin, Tapedeck openapi.yaml)
+temp/
+
+# Build output
+build/
+build-*/
+cmake-build-*/
+*.so
+*.dylib
+
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+*.swp

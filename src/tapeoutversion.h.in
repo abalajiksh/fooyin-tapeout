@@ -1,0 +1,19 @@
+/*
+ * Tapeout — Tapedeck scrobbling for fooyin
+ * Copyright 2026, Ashwin Balaji
+ *
+ * Licensed under the MIT License. See LICENSE in the project root.
+ *
+ * Note: fooyin itself is GPL-3.0, so a *distributed binary* of this plugin is a
+ * combined work and effectively GPL-3.0. The source in this repository is MIT.
+ */
+
+// Generated from tapeoutversion.h.in — do not edit.
+// The version lives in one place: project(VERSION) in the top-level CMakeLists.
+
+#pragma once
+
+#define TAPEOUT_VERSION       "@PROJECT_VERSION@"
+#define TAPEOUT_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define TAPEOUT_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define TAPEOUT_VERSION_PATCH @PROJECT_VERSION_PATCH@
