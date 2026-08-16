@@ -74,6 +74,14 @@ QString errorFromBody(const QJsonObject& obj, const QString& fallback)
 } // namespace
 
 namespace Fooyin::Tapeout {
+bool TokenInfo::hasScope(QLatin1StringView scope) const
+{
+    // Exact matching, deliberately: Tapedeck treats `rewrite` as not granting
+    // `write`, and only `all` is a wildcard — which the server has already
+    // expanded by the time we see this.
+    return scopes.contains(QString{scope});
+}
+
 TapedeckClient::TapedeckClient(std::shared_ptr<NetworkAccessManager> network, QObject* parent)
     : QObject{parent}
     , m_network{std::move(network)}
@@ -171,8 +179,26 @@ void TapedeckClient::validateToken()
         TokenInfo info;
         info.valid    = obj.value("valid"_L1).toBool();
         info.userName = obj.value("user_name"_L1).toString();
+
         if(!info.valid) {
+            // Tapedeck sends nothing else in this case, on purpose: the endpoint
+            // answers whoever asks, and reporting the build beside `valid:false`
+            // would hand it to anyone guessing at tokens.
             info.error = tr("Tapedeck does not recognise this token");
+            Q_EMIT tokenValidated(info);
+            return;
+        }
+
+        // Absent on a server older than 0.66.0, which leaves the defaults —
+        // no scopes known, no version. Both read as "cannot tell", not "no".
+        const QJsonArray scopes = obj.value("scopes"_L1).toArray();
+        for(const auto& scope : scopes) {
+            info.scopes.append(scope.toString());
+        }
+        info.serverVersion  = obj.value("server_version"_L1).toString();
+        info.importsAreLive = obj.value("imports_are_live"_L1).toBool();
+        if(const QJsonValue chain = obj.value("default_chain_id"_L1); chain.isDouble()) {
+            info.defaultChainId = chain.toInt();
         }
 
         Q_EMIT tokenValidated(info);

@@ -13,9 +13,11 @@
 #include "listen.h"
 
 #include <QObject>
+#include <QStringList>
 #include <QUrl>
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 class QJsonDocument;
@@ -38,12 +40,32 @@ struct SubmitResult
     QString error;
 };
 
-//! What a token turned out to be able to do.
+/*!
+ * What a token turned out to be able to do.
+ *
+ * Everything past @a userName is only sent when the token is valid — the
+ * endpoint answers whoever asks, so Tapedeck will not report its build beside
+ * `valid: false`. Read these only inside a `valid` branch.
+ */
 struct TokenInfo
 {
     bool valid{false};
     QString userName;
     QString error;
+
+    /*!
+     * As granted, with `all` already expanded. Matching is exact and **none
+     * implies another** — `submit` does not carry `read`.
+     */
+    QStringList scopes;
+    //! Empty against a Tapedeck older than 0.66.0, which did not report it.
+    QString serverVersion;
+    //! Whether this token's `import` submissions are relayed. Tapeout sends `single`, so it is informational.
+    bool importsAreLive{false};
+    //! Rung 3 of the chain ladder, when the token carries one.
+    std::optional<int> defaultChainId;
+
+    [[nodiscard]] bool hasScope(QLatin1StringView scope) const;
 };
 
 /*!

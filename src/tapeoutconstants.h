@@ -29,8 +29,14 @@ constexpr auto SubmissionClient = "Tapeout";
 constexpr auto MaxListensPerRequest = 1000;
 
 /*!
- * Tapedeck expires a now-playing entry once it runs past the track's duration,
- * so a long track needs re-reporting. Matches the bundled scrobbler's cadence.
+ * How often to re-report the playhead while a track is on.
+ *
+ * Much shorter than the bundled scrobbler's three minutes, because this now
+ * carries a position rather than only "a track started". Tapedeck forwards a
+ * now-playing outward solely on a real change of track, so a heartbeat costs
+ * nothing past our own instance — and between beats the deck counts forward
+ * from the last position it was given, so the interval is the drift a pause
+ * or an untracked jump can accumulate.
  */
-constexpr auto NowPlayingRefreshIntervalMs = 180000;
+constexpr auto NowPlayingRefreshIntervalMs = 30000;
 } // namespace Fooyin::Tapeout::Constants

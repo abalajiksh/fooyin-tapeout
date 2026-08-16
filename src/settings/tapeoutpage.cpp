@@ -188,12 +188,33 @@ void TapeoutPageWidget::showResult(const TokenInfo& info)
 {
     m_testButton->setEnabled(true);
 
-    if(info.valid) {
-        m_testResult->setText(tr("Connected as %1").arg(info.userName));
-    }
-    else {
+    if(!info.valid) {
         m_testResult->setText(info.error);
+        updateWidgetState();
+        return;
     }
+
+    QString text = tr("Connected as %1").arg(info.userName);
+    if(!info.serverVersion.isEmpty()) {
+        text += tr(" — Tapedeck %1").arg(info.serverVersion);
+    }
+
+    // Scopes do not imply one another, so `submit` alone is the common case and
+    // says nothing about whether the chain picker will ever work. Saying so here
+    // is the whole point of asking: the alternative is a 403 at the moment the
+    // user tries to use it.
+    if(!info.scopes.isEmpty()) {
+        if(!info.hasScope("submit"_L1)) {
+            text += "\n"_L1 + tr("This token cannot submit listens. It needs the 'submit' scope.");
+        }
+        else if(!info.hasScope("read"_L1)) {
+            text += "\n"_L1
+                  + tr("Listens will be sent. Add the 'read' scope for a signal-chain picker.");
+        }
+    }
+
+    m_testResult->setText(text);
+    updateWidgetState();
 }
 
 void TapeoutPageWidget::updateWidgetState()

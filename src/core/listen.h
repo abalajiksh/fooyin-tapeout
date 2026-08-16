@@ -65,6 +65,40 @@ struct DeviceInfo
     [[nodiscard]] QJsonObject toJson() const;
 };
 
+/*!
+ * What the listener chose, as `tapedeck_session`.
+ *
+ * Two fields, not five. Tapedeck reads `is_shuffle` and `queue_source` and
+ * deliberately ignores `volume_level` (a slider, not a listen), `skip_count`
+ * (derived from the listens, and better for it) and `is_repeat` (a mode; a
+ * repeat that actually happened is already two listens).
+ */
+struct SessionInfo
+{
+    bool shuffle{false};
+    //! Free text — our own vocabulary for our own containers. Usually a playlist name.
+    QString queueSource;
+
+    [[nodiscard]] QJsonObject toJson() const;
+};
+
+/*!
+ * The playhead, as `tapedeck_playback`. **Only meaningful on `playing_now`** —
+ * Tapedeck reads it solely to feed the deck, and it is never stored on a listen.
+ *
+ * `paused` is not decoration. Supplying a position makes Tapedeck mark the entry
+ * `position_known`, which turns a paused track's advancing playhead from a guess
+ * that happens to be wrong into an assertion that is wrong. The two travel
+ * together or not at all.
+ */
+struct PlaybackState
+{
+    qint64 positionMs{0};
+    bool paused{false};
+
+    [[nodiscard]] QJsonObject toJson() const;
+};
+
 //! One listen, in the shape Tapedeck's ingest handler reads.
 struct Listen
 {
@@ -84,11 +118,21 @@ struct Listen
     qint64 timestamp{0};
     bool skipped{false};
 
+    /*!
+     * How much was actually heard, paused time excluded. Pairs with `skipped` —
+     * a bool alone cannot separate "cut short three seconds in" from "cut short
+     * with thirty seconds left", which are opposite behaviours.
+     */
+    std::optional<qint64> listenedMs;
+
     //! Explicit chain name. Empty means "let Tapedeck resolve it", which is the norm.
     QString chainName;
 
     std::optional<AudioQuality> quality;
     std::optional<DeviceInfo> device;
+    std::optional<SessionInfo> session;
+    //! Set on the now-playing path only, and never persisted to the queue.
+    std::optional<PlaybackState> playback;
 
     [[nodiscard]] bool isValid() const;
 

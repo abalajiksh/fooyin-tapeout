@@ -17,6 +17,7 @@
 
 #include <core/engine/enginecontroller.h>
 #include <core/player/playercontroller.h>
+#include <core/playlist/playlisthandler.h>
 #include <utils/settings/settingsmanager.h>
 
 #include <QDateTime>
@@ -52,11 +53,12 @@ qint64 nowSecs()
 
 namespace Fooyin::Tapeout {
 TapeoutController::TapeoutController(PlayerController* playerController, EngineController* engine,
-                                     std::shared_ptr<NetworkAccessManager> network, SettingsManager* settings,
-                                     QObject* parent)
+                                     PlaylistHandler* playlistHandler, std::shared_ptr<NetworkAccessManager> network,
+                                     SettingsManager* settings, QObject* parent)
     : QObject{parent}
     , m_playerController{playerController}
     , m_engine{engine}
+    , m_playlistHandler{playlistHandler}
     , m_settings{settings}
     , m_client{std::make_unique<TapedeckClient>(std::move(network))}
     , m_queue{std::make_unique<ListenQueue>(queueFilePath())}
@@ -84,6 +86,13 @@ TapeoutController::TapeoutController(PlayerController* playerController, EngineC
                      });
     QObject::connect(m_engine, &EngineController::deviceChanged, this,
                      [this](const QString& device) { m_outputDevice = device; });
+
+    // A seek is the one thing a heartbeat cannot cover: between beats Tapedeck
+    // counts forward from the last position it was told, which is right until
+    // the listener jumps. Reporting immediately is cheap and Tapedeck believes a
+    // backward step from a pushing client outright, so nothing needs debouncing.
+    QObject::connect(m_playerController, &PlayerController::positionMoved, this,
+                     [this](uint64_t /*ms*/) { updateNowPlaying(m_playerController->currentTrack()); });
 
     QObject::connect(m_client.get(), &TapedeckClient::listensSubmitted, this, &TapeoutController::handleSubmitResult);
 
@@ -117,11 +126,32 @@ void TapeoutController::reloadSettings()
     }
 }
 
+SessionInfo TapeoutController::currentSession() const
+{
+    SessionInfo session;
+
+    const Playlist::PlayModes mode = m_playerController->playMode();
+    session.shuffle = mode.testFlag(Playlist::ShuffleTracks) || mode.testFlag(Playlist::ShuffleAlbums);
+
+    // Free text, and Tapedeck says so — this is our vocabulary for our own
+    // containers, with nothing shared to normalise against. The playlist the
+    // track is actually playing from is the honest answer.
+    const PlaylistTrack plTrack = m_playerController->currentPlaylistTrack();
+    if(plTrack.isInPlaylist()) {
+        if(const Playlist* playlist = m_playlistHandler->playlistById(plTrack.playlistId)) {
+            session.queueSource = playlist->name();
+        }
+    }
+
+    return session;
+}
+
 Listen TapeoutController::buildListen(const Track& track) const
 {
     using namespace Settings::Tapeout;
 
     Listen listen = listenFromTrack(track);
+    listen.session = currentSession();
 
     if(!m_settings->value<SendQuality>()) {
         listen.quality.reset();
@@ -176,6 +206,9 @@ void TapeoutController::handleTrackPlayed(const Track& track)
     // Always the *start* of play, which is what Tapedeck stores and what its
     // duplicate window is measured against.
     listen.timestamp = m_currentStartedAt > 0 ? m_currentStartedAt : nowSecs();
+    // fooyin already excludes paused time from this, which is exactly what the
+    // column means on Tapedeck's side.
+    listen.listenedMs = static_cast<qint64>(m_playerController->currentTimeListened());
 
     if(!listen.isValid()) {
         qCDebug(TAPEOUT) << "Not submitting a track with no title or artist";
@@ -195,6 +228,9 @@ void TapeoutController::queueSkip(const Track& track, qint64 startedAt)
     Listen listen    = buildListen(track);
     listen.timestamp = startedAt > 0 ? startedAt : nowSecs();
     listen.skipped   = true;
+    // The whole point of pairing this with `skipped`: how far in the listener
+    // gave up is the difference between disliking a track and mis-clicking.
+    listen.listenedMs = static_cast<qint64>(m_playerController->currentTimeListened());
 
     if(listen.isValid()) {
         m_queue->add(listen);
@@ -224,15 +260,13 @@ void TapeoutController::handlePlayStateChanged(Player::PlayState state, Player::
         return;
     }
 
-    if(state == Player::PlayState::Playing && isEnabled()) {
+    // Playing and paused are the same call. `tapedeck_playback.state` carries
+    // the difference, and the heartbeat keeps running through a pause on
+    // purpose: a paused entry holds its position and expires only after ten
+    // minutes of silence, so stopping the beat would drop the track off the deck
+    // rather than showing it paused.
+    if(isEnabled()) {
         updateNowPlaying(m_playerController->currentTrack());
-    }
-    else if(state == Player::PlayState::Paused) {
-        // Tapedeck extrapolates a now-playing position from wall-clock, so a
-        // paused track would keep advancing on the deck. Nothing in the
-        // ListenBrainz format can say "paused" — this is what N1 in
-        // TAPEDECK-CHANGES.md fixes.
-        m_nowPlayingTimer.stop();
     }
 }
 
@@ -242,10 +276,22 @@ void TapeoutController::updateNowPlaying(const Track& track)
         return;
     }
 
-    m_client->updateNowPlaying(buildListen(track));
+    Listen listen = buildListen(track);
 
-    // Tapedeck expires an entry once its own arithmetic runs past the track's
-    // duration, so a long track has to be re-reported to stay on the deck.
+    // The playhead, measured now. This is what makes Tapedeck treat the position
+    // as `Exact` rather than counting forward from when we last spoke — and the
+    // paused flag is what stops that becoming a confident lie the moment the
+    // listener hits pause.
+    PlaybackState playback;
+    playback.positionMs = static_cast<qint64>(m_playerController->currentPosition());
+    playback.paused     = m_playerController->playState() == Player::PlayState::Paused;
+    listen.playback     = playback;
+
+    m_client->updateNowPlaying(listen);
+
+    // Heartbeating is safe: Tapedeck forwards a now-playing to Last.fm and
+    // ListenBrainz only on a real change of track, so repeats cost nothing
+    // beyond our own instance.
     m_nowPlayingTimer.start(NowPlayingRefreshTimer, this);
 }
 
@@ -298,7 +344,11 @@ void TapeoutController::handleSubmitResult(const SubmitResult& result, const std
 void TapeoutController::timerEvent(QTimerEvent* event)
 {
     if(event->timerId() == m_nowPlayingTimer.timerId()) {
-        if(isEnabled() && m_playerController->playState() == Player::PlayState::Playing) {
+        // Paused counts as still on the deck — the beat is what keeps a paused
+        // track from expiring, and it is how Tapedeck learns the pause is still
+        // in effect. Only a stop ends it.
+        const bool onDeck = m_playerController->playState() != Player::PlayState::Stopped;
+        if(isEnabled() && onDeck) {
             updateNowPlaying(m_playerController->currentTrack());
         }
         else {

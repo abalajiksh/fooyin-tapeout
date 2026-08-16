@@ -24,6 +24,7 @@ namespace Fooyin {
 class EngineController;
 class NetworkAccessManager;
 class PlayerController;
+class PlaylistHandler;
 class SettingsManager;
 
 namespace Tapeout {
@@ -44,8 +45,8 @@ class TapeoutController : public QObject
 
 public:
     TapeoutController(PlayerController* playerController, EngineController* engine,
-                      std::shared_ptr<NetworkAccessManager> network, SettingsManager* settings,
-                      QObject* parent = nullptr);
+                      PlaylistHandler* playlistHandler, std::shared_ptr<NetworkAccessManager> network,
+                      SettingsManager* settings, QObject* parent = nullptr);
     ~TapeoutController() override;
 
     [[nodiscard]] TapedeckClient* client() const;
@@ -65,12 +66,14 @@ private:
 
     [[nodiscard]] bool isEnabled() const;
     [[nodiscard]] Listen buildListen(const Track& track) const;
+    [[nodiscard]] SessionInfo currentSession() const;
     void queueSkip(const Track& track, qint64 startedAt);
     void flush();
     void updateNowPlaying(const Track& track);
 
     PlayerController* m_playerController;
     EngineController* m_engine;
+    PlaylistHandler* m_playlistHandler;
     SettingsManager* m_settings;
 
     std::unique_ptr<TapedeckClient> m_client;

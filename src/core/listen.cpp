@@ -126,8 +126,34 @@ QJsonObject DeviceInfo::toJson() const
     return obj;
 }
 
+QJsonObject SessionInfo::toJson() const
+{
+    QJsonObject obj;
+
+    obj.insert("is_shuffle"_L1, shuffle);
+    insertIfSet(obj, "queue_source"_L1, queueSource);
+
+    return obj;
+}
+
+QJsonObject PlaybackState::toJson() const
+{
+    QJsonObject obj;
+
+    obj.insert("position_ms"_L1, positionMs);
+    // Always stated. Tapedeck reads anything other than the literal "paused" as
+    // playing, but leaving it out on a pause would be the one failure this
+    // object exists to prevent.
+    obj.insert("state"_L1, paused ? "paused"_L1 : "playing"_L1);
+
+    return obj;
+}
+
 bool Listen::isValid() const
 {
+    // No minimum duration. The bundled scrobbler refuses anything under 30
+    // seconds, but Tapedeck does not, and an album intro is a thing that was
+    // genuinely listened to.
     return !title.isEmpty() && !artist.isEmpty();
 }
 
@@ -168,12 +194,19 @@ QJsonObject Listen::toJson() const
     if(skipped) {
         info.insert("skipped"_L1, true);
     }
+    insertIfSet(info, "listened_ms"_L1, listenedMs);
 
     if(quality) {
         info.insert("tapedeck_audio"_L1, quality->toJson());
     }
     if(device) {
         info.insert("tapedeck_device"_L1, device->toJson());
+    }
+    if(session) {
+        info.insert("tapedeck_session"_L1, session->toJson());
+    }
+    if(playback) {
+        info.insert("tapedeck_playback"_L1, playback->toJson());
     }
     if(!chainName.isEmpty()) {
         // Despite the key, Tapedeck resolves this by *name*. An unknown one
@@ -212,12 +245,20 @@ QJsonObject Listen::serialise() const
     if(skipped) {
         obj.insert("skipped"_L1, true);
     }
+    insertIfSet(obj, "listened_ms"_L1, listenedMs);
     if(quality) {
         obj.insert("quality"_L1, quality->toJson());
     }
     if(device) {
         obj.insert("device"_L1, device->toJson());
     }
+    if(session) {
+        obj.insert("session"_L1, session->toJson());
+    }
+
+    // `playback` is deliberately absent: it describes where the playhead was at
+    // the moment of submission, which means nothing for a listen replayed out of
+    // the queue an hour later.
 
     return obj;
 }
@@ -239,6 +280,16 @@ Listen Listen::deserialise(const QJsonObject& obj)
 
     if(obj.contains("duration_ms"_L1)) {
         listen.durationMs = obj.value("duration_ms"_L1).toInteger();
+    }
+    if(obj.contains("listened_ms"_L1)) {
+        listen.listenedMs = obj.value("listened_ms"_L1).toInteger();
+    }
+    if(obj.contains("session"_L1)) {
+        SessionInfo session;
+        const QJsonObject s = obj.value("session"_L1).toObject();
+        session.shuffle     = s.value("is_shuffle"_L1).toBool();
+        session.queueSource = s.value("queue_source"_L1).toString();
+        listen.session      = session;
     }
 
     const auto readStrings = [&obj](QLatin1StringView key) {

@@ -25,8 +25,8 @@ void TapeoutPlugin::initialise(const CorePluginContext& context)
     m_settings = context.settingsManager;
 
     m_tapeoutSettings = std::make_unique<TapeoutSettings>(m_settings);
-    m_controller      = std::make_unique<TapeoutController>(context.playerController, context.engine,
-                                                            context.networkAccess, m_settings);
+    m_controller = std::make_unique<TapeoutController>(context.playerController, context.engine,
+                                                       context.playlistHandler, context.networkAccess, m_settings);
 }
 
 void TapeoutPlugin::initialise(const GuiPluginContext& context)
