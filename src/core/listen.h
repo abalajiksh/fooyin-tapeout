@@ -169,5 +169,8 @@ Listen listenFromTrack(const Track& track);
  * identified and never looked up again. Callers must omit the key, not send "".
  */
 QString normaliseMbid(const QString& value);
+
+//! First value of a multi-valued tag, or empty. Keys are matched case-insensitively.
+QString firstExtraTag(const Track& track, const QString& tag);
 } // namespace Tapeout
 } // namespace Fooyin

@@ -16,12 +16,16 @@
 #include <core/track.h>
 
 #include <QBasicTimer>
+#include <QHash>
 #include <QObject>
+#include <QSet>
 
 #include <memory>
 
 namespace Fooyin {
+class AudioLoader;
 class EngineController;
+class MusicLibrary;
 class NetworkAccessManager;
 class PlayerController;
 class PlaylistHandler;
@@ -45,11 +49,24 @@ class TapeoutController : public QObject
 
 public:
     TapeoutController(PlayerController* playerController, EngineController* engine,
-                      PlaylistHandler* playlistHandler, std::shared_ptr<NetworkAccessManager> network,
+                      PlaylistHandler* playlistHandler, MusicLibrary* library,
+                      std::shared_ptr<NetworkAccessManager> network, std::shared_ptr<AudioLoader> audioLoader,
                       SettingsManager* settings, QObject* parent = nullptr);
     ~TapeoutController() override;
 
     [[nodiscard]] TapedeckClient* client() const;
+
+    /*!
+     * The output fooyin is playing through, as Tapedeck knows it.
+     *
+     * This is the string a chain binding is keyed on, so a settings screen can
+     * say whether *this* output resolves to a chain rather than only listing
+     * the bindings and leaving the reader to match them up.
+     */
+    [[nodiscard]] QString currentOutputDevice() const;
+
+    //! Asks Tapedeck what it would do with what is playing, storing nothing.
+    void previewCurrentTrack();
 
     //! Flushes anything held and writes the queue out.
     void shutdown();
@@ -78,10 +95,32 @@ private:
     void queueSkip(const Track& track, qint64 startedAt, qint64 listenedMs);
     void flush();
     void updateNowPlaying(const Track& track);
+    /*!
+     * Offers Tapedeck the words and the cover this file carries.
+     *
+     * Once per track and once per record per run, not once per play: both are
+     * properties of the file rather than of the listening, and the queue behind
+     * listens deliberately has no counterpart here — a send that fails is
+     * offered again the next time the track comes round.
+     */
+    void offerMedia(const Track& track);
+    /*!
+     * Pushes a love when a rating crosses the threshold, and withdraws one when
+     * it falls back under.
+     *
+     * Only ever reacts to a rating *changing* under fooyin's hands. It does not
+     * reconcile the library against Tapedeck at startup, which is the difference
+     * between a feature and an accident: loves also arrive from Tapedeck's own
+     * UI and from a Last.fm pull, and a bulk pass would read every one of those
+     * as "not starred here" and take it away.
+     */
+    void handleTracksChanged(const TrackList& tracks);
 
     PlayerController* m_playerController;
     EngineController* m_engine;
     PlaylistHandler* m_playlistHandler;
+    MusicLibrary* m_library;
+    std::shared_ptr<AudioLoader> m_audioLoader;
     SettingsManager* m_settings;
 
     std::unique_ptr<TapedeckClient> m_client;
@@ -112,6 +151,26 @@ private:
     qint64 m_lastListenedMs{0};
     //! True while a submission is in flight, so the queue is not sent twice.
     bool m_submitting{false};
+
+    /*!
+     * What has already been offered this run.
+     *
+     * In memory on purpose. Persisting it would save a handful of requests a
+     * session against a cache that can be cleared, a file that can be retagged
+     * and a cover that can be replaced — and would then be wrong about all
+     * three until somebody deleted it.
+     */
+    QSet<QString> m_lyricsOffered;
+    QSet<QString> m_artworkOffered;
+
+    /*!
+     * Last rating seen for a track, on fooyin's 0–10 half-star scale.
+     *
+     * Seeded silently on first sighting: the first time a track is seen is not
+     * the user rating it, and treating it as one would push the whole library
+     * the first time fooyin rescans.
+     */
+    QHash<QString, int> m_ratings;
 };
 } // namespace Tapeout
 } // namespace Fooyin

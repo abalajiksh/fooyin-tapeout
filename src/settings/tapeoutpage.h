@@ -16,14 +16,19 @@ namespace Fooyin {
 class SettingsManager;
 
 namespace Tapeout {
-class TapedeckClient;
+class TapeoutController;
 
 class TapeoutPage : public SettingsPage
 {
     Q_OBJECT
 
 public:
-    TapeoutPage(TapedeckClient* client, SettingsManager* settings, QObject* parent = nullptr);
+    /*!
+     * Takes the controller rather than the client: the page needs the playhead's
+     * current track for a dry run and the live output device name for the
+     * binding readout, and neither of those is the client's to know.
+     */
+    TapeoutPage(TapeoutController* controller, SettingsManager* settings, QObject* parent = nullptr);
 };
 } // namespace Tapeout
 } // namespace Fooyin

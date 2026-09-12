@@ -14,8 +14,11 @@
 #include "tapedeckclient.h"
 #include "tapeoutconstants.h"
 #include "tapeoutsettings.h"
+#include "trackmedia.h"
 
+#include <core/engine/audioloader.h>
 #include <core/engine/enginecontroller.h>
+#include <core/library/musiclibrary.h>
 #include <core/player/playercontroller.h>
 #include <core/playlist/playlisthandler.h>
 #include <utils/settings/settingsmanager.h>
@@ -51,16 +54,32 @@ qint64 nowSecs()
 {
     return QDateTime::currentSecsSinceEpoch();
 }
+
+/*!
+ * Keys the "already offered" sets.
+ *
+ * Case-folded and separated by a unit separator, which cannot appear in either
+ * half — joining on a character that can would make "A/B" + "C" collide with
+ * "A" + "B/C".
+ */
+QString mediaKey(const QString& first, const QString& second)
+{
+    return first.toCaseFolded() + u'' + second.toCaseFolded();
+}
 } // namespace
 
 namespace Fooyin::Tapeout {
 TapeoutController::TapeoutController(PlayerController* playerController, EngineController* engine,
-                                     PlaylistHandler* playlistHandler, std::shared_ptr<NetworkAccessManager> network,
-                                     SettingsManager* settings, QObject* parent)
+                                     PlaylistHandler* playlistHandler, MusicLibrary* library,
+                                     std::shared_ptr<NetworkAccessManager> network,
+                                     std::shared_ptr<AudioLoader> audioLoader, SettingsManager* settings,
+                                     QObject* parent)
     : QObject{parent}
     , m_playerController{playerController}
     , m_engine{engine}
     , m_playlistHandler{playlistHandler}
+    , m_library{library}
+    , m_audioLoader{std::move(audioLoader)}
     , m_settings{settings}
     , m_client{std::make_unique<TapedeckClient>(std::move(network))}
     , m_queue{std::make_unique<ListenQueue>(queueFilePath())}
@@ -109,6 +128,15 @@ TapeoutController::TapeoutController(PlayerController* playerController, EngineC
                      [this](uint64_t /*ms*/) { updateNowPlaying(m_playerController->currentTrack()); });
 
     QObject::connect(m_client.get(), &TapedeckClient::listensSubmitted, this, &TapeoutController::handleSubmitResult);
+
+    // Both, because fooyin routes a rating written to the file and a rating held
+    // in the library through different signals, and a love should not depend on
+    // which one the user's tag-writing settings produce.
+    if(m_library) {
+        QObject::connect(m_library, &MusicLibrary::tracksMetadataChanged, this,
+                         &TapeoutController::handleTracksChanged);
+        QObject::connect(m_library, &MusicLibrary::tracksUpdated, this, &TapeoutController::handleTracksChanged);
+    }
 
     // Anything left from the last session goes out as soon as we are configured.
     if(isEnabled() && !m_queue->isEmpty()) {
@@ -204,6 +232,45 @@ void TapeoutController::handleTrackChanged(const Track& track)
     }
 
     updateNowPlaying(track);
+    offerMedia(track);
+}
+
+void TapeoutController::offerMedia(const Track& track)
+{
+    using namespace Settings::Tapeout;
+
+    const QString artist = track.artist();
+    if(artist.isEmpty()) {
+        return;
+    }
+
+    if(m_settings->value<SendLyrics>() && !track.title().isEmpty()) {
+        // Marked before the request, not after. The set exists to stop a
+        // repeat-one play asking twice, and a send that never comes back is
+        // exactly the case where asking again would not help.
+        if(const QString key = mediaKey(artist, track.title()); !m_lyricsOffered.contains(key)) {
+            m_lyricsOffered.insert(key);
+            if(const TrackLyrics lyrics = lyricsFromTrack(track); !lyrics.isEmpty()) {
+                m_client->sendLyrics(artist, track.title(), track.album(), lyrics);
+            }
+        }
+    }
+
+    if(!m_settings->value<SendArtwork>() || track.album().isEmpty() || !m_audioLoader) {
+        return;
+    }
+
+    // The *track* artist, not the album artist, because Tapedeck identifies a
+    // record by the pair its listens carry and a listen carries the track
+    // artist. On a compilation that means offering the sleeve once per
+    // contributor — which is what Tapedeck's own album keying asks for, and the
+    // repeats cost a question each rather than an upload.
+    if(const QString key = mediaKey(artist, track.album()); !m_artworkOffered.contains(key)) {
+        m_artworkOffered.insert(key);
+        m_client->offerArtwork(artist, track.album(),
+                               normaliseMbid(firstExtraTag(track, u"MUSICBRAINZ_ALBUMID"_s)),
+                               [track, loader = m_audioLoader] { return coverFromTrack(track, *loader); });
+    }
 }
 
 void TapeoutController::handleTrackPlayed(const Track& track)
@@ -330,6 +397,73 @@ void TapeoutController::updateNowPlaying(const Track& track)
     // ListenBrainz only on a real change of track, so repeats cost nothing
     // beyond our own instance.
     m_nowPlayingTimer.start(NowPlayingRefreshTimer, this);
+}
+
+void TapeoutController::handleTracksChanged(const TrackList& tracks)
+{
+    using namespace Settings::Tapeout;
+
+    if(!isEnabled() || !m_settings->value<SendLoves>()) {
+        // The ratings map is still not updated here, deliberately. Turning the
+        // setting on mid-session then seeds from whatever is current, so
+        // enabling it does not replay every edit made while it was off.
+        return;
+    }
+
+    // fooyin's internal scale is 0–10 half-stars; the setting is whole stars.
+    const int threshold = std::clamp(m_settings->value<LoveThreshold>(), 1, 5) * 2;
+
+    for(const Track& track : tracks) {
+        if(!track.isValid() || track.title().isEmpty() || track.artist().isEmpty()) {
+            continue;
+        }
+
+        const QString key   = track.uniqueFilepath();
+        const int rating    = track.ratingStars();
+        const auto previous = m_ratings.constFind(key);
+
+        // First sighting is not an edit — see m_ratings.
+        if(previous == m_ratings.constEnd()) {
+            m_ratings.insert(key, rating);
+            continue;
+        }
+        if(*previous == rating) {
+            continue;
+        }
+
+        const bool wasLoved = *previous >= threshold;
+        const bool isLoved  = rating >= threshold;
+        m_ratings.insert(key, rating);
+
+        // Only a crossing is news. Going from three stars to four is a rating
+        // change and not a love, and sending one would overwrite a love the
+        // user set in Tapedeck itself.
+        if(wasLoved != isLoved) {
+            m_client->setLove(track.artist(), track.title(), isLoved);
+        }
+    }
+}
+
+QString TapeoutController::currentOutputDevice() const
+{
+    return m_outputDevice;
+}
+
+void TapeoutController::previewCurrentTrack()
+{
+    const Track track = m_playerController->currentTrack();
+    if(!track.isValid()) {
+        m_client->dryRun({});
+        return;
+    }
+
+    Listen listen = buildListen(track);
+    // A real timestamp, because the dry run reports whether dedup *would* have
+    // swallowed this — and against a made-up time that answer means nothing.
+    listen.timestamp  = m_currentStartedAt > 0 ? m_currentStartedAt : nowSecs();
+    listen.listenedMs = std::max(m_lastListenedMs, static_cast<qint64>(m_playerController->currentTimeListened()));
+
+    m_client->dryRun(listen);
 }
 
 void TapeoutController::flush()

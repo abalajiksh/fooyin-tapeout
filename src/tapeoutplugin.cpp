@@ -26,14 +26,15 @@ void TapeoutPlugin::initialise(const CorePluginContext& context)
 
     m_tapeoutSettings = std::make_unique<TapeoutSettings>(m_settings);
     m_controller = std::make_unique<TapeoutController>(context.playerController, context.engine,
-                                                       context.playlistHandler, context.networkAccess, m_settings);
+                                                       context.playlistHandler, context.library,
+                                                       context.networkAccess, context.audioLoader, m_settings);
 }
 
 void TapeoutPlugin::initialise(const GuiPluginContext& context)
 {
     Q_UNUSED(context)
 
-    new TapeoutPage(m_controller->client(), m_settings, this);
+    new TapeoutPage(m_controller.get(), m_settings, this);
 }
 
 void TapeoutPlugin::shutdown()

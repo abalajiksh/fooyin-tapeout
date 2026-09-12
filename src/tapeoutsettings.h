@@ -41,6 +41,21 @@ enum TapeoutSettings : uint32_t
      * Generated once on first run — see TapeoutSettings::machineId().
      */
     MachineId = 7 | Type::String,
+    /*!
+     * Send the words a file carries to Tapedeck's lyrics cache.
+     *
+     * Off by default, and not only out of caution: the endpoint is newer than
+     * the rest of this plugin, so on an older Tapedeck this would 404 once per
+     * track. Both of these also need the `write` scope, which a token minted
+     * for scrobbling alone does not carry.
+     */
+    SendLyrics = 8 | Type::Bool,
+    //! Offer the embedded cover for records Tapedeck has no artwork for.
+    SendArtwork = 9 | Type::Bool,
+    //! Love a recording in Tapedeck when its fooyin rating crosses LoveThreshold.
+    SendLoves = 10 | Type::Bool,
+    //! Whole stars, 1–5. Compared against fooyin's internal 0–10 half-star scale.
+    LoveThreshold = 11 | Type::Int,
 };
 Q_ENUM_NS(TapeoutSettings)
 } // namespace Settings::Tapeout

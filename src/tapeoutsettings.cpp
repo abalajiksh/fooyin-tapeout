@@ -28,6 +28,13 @@ TapeoutSettings::TapeoutSettings(SettingsManager* settings)
     m_settings->createSetting<SendQuality>(true, u"Tapeout/SendQuality"_s);
     m_settings->createSetting<SendDevice>(true, u"Tapeout/SendDevice"_s);
     m_settings->createSetting<SendSkips>(true, u"Tapeout/SendSkips"_s);
+    m_settings->createSetting<SendLoves>(false, u"Tapeout/SendLoves"_s);
+    // Five stars. A love is the strongest thing this plugin can say about a
+    // track and it is mirrored out to Last.fm and ListenBrainz, so the default
+    // is the rating that clearly means it.
+    m_settings->createSetting<LoveThreshold>(5, u"Tapeout/LoveThreshold"_s);
+    m_settings->createSetting<SendLyrics>(false, u"Tapeout/SendLyrics"_s);
+    m_settings->createSetting<SendArtwork>(false, u"Tapeout/SendArtwork"_s);
     m_settings->createSetting<ChainName>(u""_s, u"Tapeout/ChainName"_s);
     m_settings->createSetting<MachineId>(u""_s, u"Tapeout/MachineId"_s);
 

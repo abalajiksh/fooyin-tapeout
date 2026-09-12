@@ -11,6 +11,7 @@
  */
 
 #include "core/listen.h"
+#include "core/trackmedia.h"
 
 #include <QJsonObject>
 
@@ -116,6 +117,28 @@ void untaggedMbidsAreOmitted()
     assert(!info.contains("isrc"_L1));
     assert(!info.contains("album_artist_mbids"_L1));
 }
+
+/*
+ * Which column a lyric lands in is decided by this one predicate, and both ways
+ * of getting it wrong are silent: timed words filed as plain leave the reader
+ * unable to follow the deck, and plain words filed as timed make Tapedeck read
+ * every leading bracket as a cue.
+ */
+void timedLyricsAreToldApartFromPlainOnes()
+{
+    assert(lyricsAreTimed(u"[00:12.30] the words\n[00:15.00] more words"_s));
+    // The cue need not be on the first line — an LRC usually opens with metadata.
+    assert(lyricsAreTimed(u"[ar: Somebody]\n[ti: A Song]\n[00:12.30] the words"_s));
+    assert(lyricsAreTimed(u"\t[1:04] indented, but still a cue"_s));
+
+    assert(!lyricsAreTimed(u"the words\nmore words"_s));
+    // The case the anchor exists for: a section marker is lyrics in a great many
+    // songs, and it is not a timestamp.
+    assert(!lyricsAreTimed(u"[Chorus]\nthe words"_s));
+    // A bracket mid-line is part of the words, wherever it looks like a cue.
+    assert(!lyricsAreTimed(u"she said [12:30] and left"_s));
+    assert(!lyricsAreTimed(u""_s));
+}
 } // namespace
 
 int main()
@@ -124,6 +147,7 @@ int main()
     olderQueueEntryStillLoads();
     wireCarriesEveryMbid();
     untaggedMbidsAreOmitted();
+    timedLyricsAreToldApartFromPlainOnes();
 
     printf("ok\n");
     return 0;

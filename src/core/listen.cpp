@@ -49,16 +49,6 @@ bool codecIsDsd(const QString& codec)
     return name.contains(u"dsd"_s) || name.contains(u"dsf"_s) || name.contains(u"dff"_s);
 }
 
-//! First value of a multi-valued tag, or empty.
-QString firstExtraTag(const Fooyin::Track& track, const QString& tag)
-{
-    if(!track.hasExtraTag(tag)) {
-        return {};
-    }
-    const QStringList values = track.extraTag(tag);
-    return values.empty() ? QString{} : values.front();
-}
-
 void insertIfSet(QJsonObject& obj, QLatin1StringView key, const QString& value)
 {
     if(!value.isEmpty()) {
@@ -76,6 +66,15 @@ void insertIfSet(QJsonObject& obj, QLatin1StringView key, const std::optional<T>
 } // namespace
 
 namespace Fooyin::Tapeout {
+QString firstExtraTag(const Track& track, const QString& tag)
+{
+    if(!track.hasExtraTag(tag)) {
+        return {};
+    }
+    const QStringList values = track.extraTag(tag);
+    return values.empty() ? QString{} : values.front();
+}
+
 QString normaliseMbid(const QString& value)
 {
     const QString trimmed = value.trimmed();

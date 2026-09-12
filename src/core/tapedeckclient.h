@@ -11,17 +11,22 @@
 #pragma once
 
 #include "listen.h"
+#include "trackmedia.h"
 
+#include <QBasicTimer>
+#include <QList>
 #include <QObject>
 #include <QStringList>
 #include <QUrl>
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
 
 class QJsonDocument;
 class QNetworkReply;
+class QNetworkRequest;
 
 namespace Fooyin {
 class NetworkAccessManager;
@@ -66,6 +71,49 @@ struct TokenInfo
     std::optional<int> defaultChainId;
 
     [[nodiscard]] bool hasScope(QLatin1StringView scope) const;
+};
+
+//! One signal chain, for the picker. Tapedeck resolves a chain by *name*, so that is what is stored.
+struct ChainInfo
+{
+    int id{0};
+    QString name;
+    bool isDefault{false};
+};
+
+/*!
+ * One output-device binding — rung 2 of Tapedeck's chain ladder.
+ *
+ * @a identifier is matched against `tapedeck_device.output_device`, which is
+ * the value Tapeout already sends, so the two line up without translation.
+ */
+struct BindingInfo
+{
+    QString identifier;
+    //! Unset for an output Tapedeck has seen but nobody has assigned a chain to.
+    std::optional<int> chainId;
+};
+
+/*!
+ * What Tapedeck *would* have done with a listen, from `?dry_run`.
+ *
+ * Every field here is invisible from an ordinary successful submit, which is
+ * the point: a chain resolved from the wrong rung and one resolved from the
+ * right rung produce identical answers on the way in.
+ */
+struct DryRunInfo
+{
+    bool ok{false};
+    QString error;
+
+    QString chainName;
+    //! `explicit`, `output_binding`, `token_default`, `device_default` or `none`.
+    QString chainSource;
+    //! 0–100, computed from the `tapedeck_audio` fields. Absent when none were sent.
+    std::optional<double> qualityScore;
+    //! `pending` is forwarded onward; `imported` is stored only.
+    QString statusIfStored;
+    bool duplicate{false};
 };
 
 /*!
@@ -113,22 +161,127 @@ public:
     //! `POST /1/playing-now/delete`, so a stopped player does not leave a ghost on the deck.
     void clearNowPlaying();
 
+    /*!
+     * `POST /api/v1/lyrics/library` — the words this file carries.
+     *
+     * Not `PUT /api/v1/lyrics`, which is a *correction*: it marks the row edited
+     * and stops every later lookup touching it, which is a claim only a person
+     * typing gets to make. These are fetched words like any other, from a source
+     * that happens to be the listener's own tagging.
+     *
+     * Fire and forget. Nothing downstream depends on the answer and there is no
+     * queue behind it — the words are still in the file, so the next play of the
+     * track offers them again.
+     *
+     * @note Needs the `write` scope. See docs/tapedeck-media.md.
+     */
+    void sendLyrics(const QString& artist, const QString& title, const QString& album, const TrackLyrics& lyrics);
+
+    /*!
+     * Offer this album's cover, if Tapedeck has none.
+     *
+     * Asks `GET /api/v1/art/library` first and uploads only on a no. The cover is
+     * a lazily-read megabyte, so @a cover is a producer rather than the bytes:
+     * an album Tapedeck already has never touches the disk at all.
+     *
+     * @note Needs the `write` scope. See docs/tapedeck-media.md.
+     */
+    void offerArtwork(const QString& artist, const QString& album, const QString& releaseMbid,
+                      std::function<TrackCover()> cover);
+
+    /*!
+     * `GET /api/v1/chains` — the list behind the picker.
+     *
+     * The reason a picker beats a text field here is that Tapedeck resolves an
+     * explicit chain by name and an unknown name resolves to *nothing* rather
+     * than falling through to the next rung. A typo is silent.
+     *
+     * @note Needs the `read` scope.
+     */
+    void fetchChains();
+
+    //! `GET /api/v1/bindings` — which outputs are bound to a chain. Needs `read`.
+    void fetchBindings();
+
+    /*!
+     * `POST /1/submit-listens?dry_run=1` — resolve a listen and throw it away.
+     *
+     * Genuinely read-only: it looks a device up rather than upserting one,
+     * because asking what would happen must not itself be a listen.
+     */
+    void dryRun(const Listen& listen);
+
+    /*!
+     * `POST /api/v1/loves` — love or un-love a recording.
+     *
+     * Loves attach to entities, never to a listen; Tapedeck resolves the names
+     * itself, which is why nothing here needs an id. A recording love is
+     * mirrored outward to Last.fm and ListenBrainz.
+     *
+     * @note Needs the `write` scope.
+     */
+    void setLove(const QString& artist, const QString& title, bool loved);
+
+    /*!
+     * Begin device-code pairing, and poll it through to a token.
+     *
+     * Unauthenticated on purpose — the client has no credential yet. The
+     * vocabulary echoes RFC 8628, but this is not OAuth: no registration, no
+     * client id, and what comes back is an ordinary Tapedeck token.
+     *
+     * Only the server address needs to be set. Emits @a pairingCode as soon as
+     * there is something for the user to type, then @a pairingFinished exactly
+     * once — with a token, or with the reason there is none.
+     */
+    void beginPairing(const QString& clientName, const QString& scopes);
+    //! Stops polling. No signal follows; the caller asked for this.
+    void cancelPairing();
+
 Q_SIGNALS:
     void tokenValidated(const Fooyin::Tapeout::TokenInfo& info);
     void listensSubmitted(const Fooyin::Tapeout::SubmitResult& result, const std::vector<Fooyin::Tapeout::Listen>& sent);
     void nowPlayingUpdated(bool success);
+    void chainsFetched(const QList<Fooyin::Tapeout::ChainInfo>& chains);
+    void bindingsFetched(const QList<Fooyin::Tapeout::BindingInfo>& bindings);
+    void dryRunFinished(const Fooyin::Tapeout::DryRunInfo& info);
+    //! Something for the human to type into Tapedeck, and how long they have.
+    void pairingCode(const QString& userCode, int expiresInSecs);
+    //! Exactly once per pairing. An empty @a token means @a error says why.
+    void pairingFinished(const QString& token, const QString& userName, const QString& error);
+
+protected:
+    void timerEvent(QTimerEvent* event) override;
 
 private:
     [[nodiscard]] QUrl endpoint(QLatin1StringView path) const;
-    QNetworkReply* post(const QUrl& url, const QJsonDocument& body);
+    /*!
+     * @param authorised false for the pairing routes, which are unauthenticated
+     * by design — we have no token yet, and sending an empty one would turn a
+     * pending pairing into a rejected request.
+     */
+    [[nodiscard]] QNetworkRequest request(const QUrl& url, bool authorised = true) const;
+    QNetworkReply* post(const QUrl& url, const QJsonDocument& body, bool authorised = true);
     QNetworkReply* get(const QUrl& url);
+    void uploadArtwork(const QString& artist, const QString& album, const QString& releaseMbid,
+                       const TrackCover& cover);
+    void pollPairing();
+    void endPairing(const QString& token, const QString& userName, const QString& error);
 
     std::shared_ptr<NetworkAccessManager> m_network;
     QUrl m_serverUrl;
     QString m_token;
+
+    QBasicTimer m_pairingTimer;
+    QString m_deviceCode;
+    //! Wall clock, seconds. Pairing windows are short and the server forgets first.
+    qint64 m_pairingExpiresAt{0};
+    int m_pairingIntervalSecs{5};
 };
 } // namespace Tapeout
 } // namespace Fooyin
 
 Q_DECLARE_METATYPE(Fooyin::Tapeout::TokenInfo)
 Q_DECLARE_METATYPE(Fooyin::Tapeout::SubmitResult)
+Q_DECLARE_METATYPE(Fooyin::Tapeout::ChainInfo)
+Q_DECLARE_METATYPE(Fooyin::Tapeout::BindingInfo)
+Q_DECLARE_METATYPE(Fooyin::Tapeout::DryRunInfo)

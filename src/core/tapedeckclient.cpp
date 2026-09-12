@@ -14,11 +14,18 @@
 
 #include <core/network/networkaccessmanager.h>
 
+#include <QDateTime>
+#include <QHttpMultiPart>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QTimerEvent>
+#include <QUrlQuery>
+
+#include <algorithm>
+#include <chrono>
 
 using namespace Qt::StringLiterals;
 
@@ -133,23 +140,28 @@ QUrl TapedeckClient::endpoint(QLatin1StringView path) const
     return url;
 }
 
-QNetworkReply* TapedeckClient::post(const QUrl& url, const QJsonDocument& body)
+QNetworkRequest TapedeckClient::request(const QUrl& url, bool authorised) const
 {
     QNetworkRequest request{url};
-    request.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_s);
-    request.setRawHeader("Authorization", QStringLiteral("Token %1").arg(m_token).toUtf8());
+    if(authorised) {
+        request.setRawHeader("Authorization", QStringLiteral("Token %1").arg(m_token).toUtf8());
+    }
     request.setTransferTimeout(RequestTimeoutMs);
 
-    return m_network->post(request, body.toJson(QJsonDocument::Compact));
+    return request;
+}
+
+QNetworkReply* TapedeckClient::post(const QUrl& url, const QJsonDocument& body, bool authorised)
+{
+    QNetworkRequest req = request(url, authorised);
+    req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_s);
+
+    return m_network->post(req, body.toJson(QJsonDocument::Compact));
 }
 
 QNetworkReply* TapedeckClient::get(const QUrl& url)
 {
-    QNetworkRequest request{url};
-    request.setRawHeader("Authorization", QStringLiteral("Token %1").arg(m_token).toUtf8());
-    request.setTransferTimeout(RequestTimeoutMs);
-
-    return m_network->get(request);
+    return m_network->get(request(url));
 }
 
 void TapedeckClient::validateToken()
@@ -309,5 +321,420 @@ void TapedeckClient::clearNowPlaying()
 
     QNetworkReply* reply = post(endpoint("/1/playing-now/delete"_L1), QJsonDocument{QJsonObject{}});
     QObject::connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
+}
+
+void TapedeckClient::sendLyrics(const QString& artist, const QString& title, const QString& album,
+                                const TrackLyrics& lyrics)
+{
+    if(!isConfigured() || artist.isEmpty() || title.isEmpty() || lyrics.isEmpty()) {
+        return;
+    }
+
+    QJsonObject body;
+    body.insert("artist"_L1, artist);
+    body.insert("title"_L1, title);
+    if(!album.isEmpty()) {
+        body.insert("album"_L1, album);
+    }
+    if(!lyrics.plain.isEmpty()) {
+        body.insert("plain"_L1, lyrics.plain);
+    }
+    if(!lyrics.synced.isEmpty()) {
+        body.insert("synced"_L1, lyrics.synced);
+    }
+    // Provenance is recorded rather than assumed, which is the whole reason
+    // Tapedeck keeps this column: "from your files" and "from LRCLIB" are
+    // different statements about whose text the reader is looking at.
+    body.insert("source"_L1, QLatin1StringView{Constants::SubmissionClient});
+
+    QNetworkReply* reply = post(endpoint("/api/v1/lyrics/library"_L1), QJsonDocument{body});
+
+    QObject::connect(reply, &QNetworkReply::finished, this, [reply, title]() {
+        reply->deleteLater();
+
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if(status != 200) {
+            // Debug, not warning: a Tapedeck without the endpoint answers 404 on
+            // every track, and a log line per song is worse than the missing
+            // feature it is reporting.
+            qCDebug(TAPEOUT) << "Lyrics for" << title << "were not stored:" << status << reply->errorString();
+        }
+    });
+}
+
+void TapedeckClient::offerArtwork(const QString& artist, const QString& album, const QString& releaseMbid,
+                                  std::function<TrackCover()> cover)
+{
+    if(!isConfigured() || artist.isEmpty() || album.isEmpty() || !cover) {
+        return;
+    }
+
+    QUrl url = endpoint("/api/v1/art/library"_L1);
+    QUrlQuery query;
+    query.addQueryItem(u"artist"_s, artist);
+    query.addQueryItem(u"album"_s, album);
+    url.setQuery(query);
+
+    QNetworkReply* reply = get(url);
+
+    QObject::connect(reply, &QNetworkReply::finished, this,
+                     [this, reply, artist, album, releaseMbid, cover = std::move(cover)]() {
+                         reply->deleteLater();
+
+                         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                         if(status != 200) {
+                             qCDebug(TAPEOUT) << "Could not ask about artwork for" << album << ":" << status;
+                             return;
+                         }
+
+                         const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+                         if(obj.value("held"_L1).toBool()) {
+                             return; // Tapedeck has a cover for this record already.
+                         }
+
+                         // Only now is the disk touched — see the note on offerArtwork.
+                         const TrackCover image = cover();
+                         if(image.isEmpty()) {
+                             qCDebug(TAPEOUT) << "No usable cover to send for" << album;
+                             return;
+                         }
+
+                         uploadArtwork(artist, album, releaseMbid, image);
+                     });
+}
+
+void TapedeckClient::uploadArtwork(const QString& artist, const QString& album, const QString& releaseMbid,
+                                   const TrackCover& cover)
+{
+    auto* multiPart = new QHttpMultiPart{QHttpMultiPart::FormDataType};
+
+    const auto addText = [multiPart](QLatin1StringView name, const QString& value) {
+        if(value.isEmpty()) {
+            return;
+        }
+        QHttpPart part;
+        part.setHeader(QNetworkRequest::ContentDispositionHeader,
+                       QStringLiteral(R"(form-data; name="%1")").arg(QString{name}));
+        part.setBody(value.toUtf8());
+        multiPart->append(part);
+    };
+
+    addText("artist"_L1, artist);
+    addText("album"_L1, album);
+    // Optional, and only ever a normalised one. It is how Tapedeck tells two
+    // records with the same name apart without guessing from the title.
+    addText("release_mbid"_L1, releaseMbid);
+
+    QHttpPart filePart;
+    filePart.setHeader(QNetworkRequest::ContentTypeHeader, cover.contentType);
+    // Tapedeck takes the extension from the content type and never from the
+    // name, so the filename here is a formality the format requires.
+    filePart.setHeader(QNetworkRequest::ContentDispositionHeader, u"form-data; name=\"file\"; filename=\"cover\""_s);
+    filePart.setBody(cover.data);
+    multiPart->append(filePart);
+
+    QNetworkReply* reply = m_network->post(request(endpoint("/api/v1/art/library"_L1)), multiPart);
+    multiPart->setParent(reply);
+
+    QObject::connect(reply, &QNetworkReply::finished, this, [reply, album]() {
+        reply->deleteLater();
+
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if(status == 200) {
+            qCDebug(TAPEOUT) << "Sent a cover for" << album;
+            return;
+        }
+        // A warning here, unlike the check: we were told there was no cover and
+        // then failed to supply one, which is a thing that went wrong rather
+        // than a server that is simply older than the feature.
+        qCWarning(TAPEOUT) << "Cover upload for" << album << "failed:" << status << reply->errorString();
+    });
+}
+
+void TapedeckClient::fetchChains()
+{
+    if(!isConfigured()) {
+        return;
+    }
+
+    QNetworkReply* reply = get(endpoint("/api/v1/chains"_L1));
+
+    QObject::connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if(status != 200) {
+            // A 403 here means the token has `submit` but not `read`, which is
+            // the ordinary case rather than a fault. The picker simply stays a
+            // text field.
+            qCDebug(TAPEOUT) << "Could not list chains:" << status;
+            Q_EMIT chainsFetched({});
+            return;
+        }
+
+        QList<ChainInfo> chains;
+        const QJsonArray array = QJsonDocument::fromJson(reply->readAll()).object().value("chains"_L1).toArray();
+        for(const auto& value : array) {
+            const QJsonObject obj = value.toObject();
+            chains.append({.id        = obj.value("id"_L1).toInt(),
+                           .name      = obj.value("name"_L1).toString(),
+                           .isDefault = obj.value("is_default"_L1).toBool()});
+        }
+
+        Q_EMIT chainsFetched(chains);
+    });
+}
+
+void TapedeckClient::fetchBindings()
+{
+    if(!isConfigured()) {
+        return;
+    }
+
+    QNetworkReply* reply = get(endpoint("/api/v1/bindings"_L1));
+
+    QObject::connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if(status != 200) {
+            qCDebug(TAPEOUT) << "Could not list bindings:" << status;
+            Q_EMIT bindingsFetched({});
+            return;
+        }
+
+        QList<BindingInfo> bindings;
+        const QJsonArray array = QJsonDocument::fromJson(reply->readAll()).object().value("bindings"_L1).toArray();
+        for(const auto& value : array) {
+            const QJsonObject obj = value.toObject();
+            BindingInfo binding;
+            // `identifier`, not `output_name` — the PUT names it the other way,
+            // but a row that comes back is spelled like the column.
+            binding.identifier = obj.value("identifier"_L1).toString();
+            if(const QJsonValue chain = obj.value("chain_id"_L1); chain.isDouble()) {
+                binding.chainId = chain.toInt();
+            }
+            bindings.append(binding);
+        }
+
+        Q_EMIT bindingsFetched(bindings);
+    });
+}
+
+void TapedeckClient::dryRun(const Listen& listen)
+{
+    if(!isConfigured() || !listen.isValid()) {
+        Q_EMIT dryRunFinished({.ok = false, .error = tr("Nothing is playing")});
+        return;
+    }
+
+    QJsonObject entry;
+    entry.insert("listened_at"_L1, listen.timestamp);
+    entry.insert("track_metadata"_L1, listen.toJson());
+
+    QJsonObject body;
+    body.insert("listen_type"_L1, "single"_L1);
+    body.insert("payload"_L1, QJsonArray{entry});
+
+    QUrl url = endpoint("/1/submit-listens"_L1);
+    url.setQuery(u"dry_run=1"_s);
+
+    QNetworkReply* reply = post(url, QJsonDocument{body});
+
+    QObject::connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+
+        const int status      = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+
+        if(status != 200) {
+            Q_EMIT dryRunFinished({.ok = false, .error = errorFromBody(obj, reply->errorString())});
+            return;
+        }
+
+        const QJsonArray listens = obj.value("listens"_L1).toArray();
+        if(listens.isEmpty()) {
+            // A listen Tapedeck would refuse outright lands in `rejected` rather
+            // than `listens`, and the reason there is the useful half.
+            const QJsonArray rejected = obj.value("rejected"_L1).toArray();
+            const QString reason      = rejected.isEmpty() ? tr("Tapedeck resolved nothing")
+                                                           : rejected.first().toObject().value("reason"_L1).toString();
+            Q_EMIT dryRunFinished({.ok = false, .error = reason});
+            return;
+        }
+
+        const QJsonObject first = listens.first().toObject();
+
+        DryRunInfo info;
+        info.ok             = true;
+        info.chainName      = first.value("chain_name"_L1).toString();
+        info.chainSource    = first.value("chain_source"_L1).toString();
+        info.statusIfStored = first.value("status_if_stored"_L1).toString();
+        info.duplicate      = first.value("duplicate"_L1).toBool();
+        if(const QJsonValue score = first.value("quality_score"_L1); score.isDouble()) {
+            info.qualityScore = score.toDouble();
+        }
+
+        Q_EMIT dryRunFinished(info);
+    });
+}
+
+void TapedeckClient::setLove(const QString& artist, const QString& title, bool loved)
+{
+    if(!isConfigured() || artist.isEmpty() || title.isEmpty()) {
+        return;
+    }
+
+    QJsonObject body;
+    // Always a recording. A love of an album or an artist is a different
+    // gesture, and a star on one track is not a statement about either.
+    body.insert("kind"_L1, "recording"_L1);
+    body.insert("name"_L1, title);
+    body.insert("artist"_L1, artist);
+    body.insert("loved"_L1, loved);
+
+    QNetworkReply* reply = post(endpoint("/api/v1/loves"_L1), QJsonDocument{body});
+
+    QObject::connect(reply, &QNetworkReply::finished, this, [reply, title, loved]() {
+        reply->deleteLater();
+
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if(status == 200) {
+            qCDebug(TAPEOUT) << (loved ? "Loved" : "Un-loved") << title;
+            return;
+        }
+        qCWarning(TAPEOUT) << "Could not set love on" << title << ":" << status << reply->errorString();
+    });
+}
+
+void TapedeckClient::beginPairing(const QString& clientName, const QString& scopes)
+{
+    cancelPairing();
+
+    // Deliberately not isConfigured(): pairing is how the token is obtained, so
+    // requiring one would be a loop with no way in.
+    if(!m_serverUrl.isValid() || m_serverUrl.host().isEmpty()) {
+        Q_EMIT pairingFinished({}, {}, tr("Enter a server address first"));
+        return;
+    }
+
+    QJsonObject body;
+    body.insert("client_name"_L1, clientName);
+    body.insert("scopes"_L1, scopes);
+
+    QNetworkReply* reply = post(endpoint("/1/pair/start"_L1), QJsonDocument{body}, false);
+
+    QObject::connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+
+        const int status      = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+
+        if(status == 429) {
+            Q_EMIT pairingFinished({}, {}, tr("Tapedeck is rate limiting pairing. Try again in a minute."));
+            return;
+        }
+        if(status != 200) {
+            const QString fallback = status > 0 ? tr("The server answered %1").arg(status) : reply->errorString();
+            Q_EMIT pairingFinished({}, {}, errorFromBody(obj, fallback));
+            return;
+        }
+
+        m_deviceCode = obj.value("device_code"_L1).toString();
+        const QString userCode = obj.value("user_code"_L1).toString();
+        if(m_deviceCode.isEmpty() || userCode.isEmpty()) {
+            Q_EMIT pairingFinished({}, {}, tr("Tapedeck did not return a pairing code"));
+            return;
+        }
+
+        // Both defaulted rather than assumed: an older build that omits them
+        // should still pair, just on our own conservative schedule.
+        const int expiresIn  = obj.value("expires_in"_L1).toInt(300);
+        m_pairingIntervalSecs = std::max(1, obj.value("interval"_L1).toInt(5));
+        m_pairingExpiresAt    = QDateTime::currentSecsSinceEpoch() + expiresIn;
+
+        Q_EMIT pairingCode(userCode, expiresIn);
+        m_pairingTimer.start(std::chrono::seconds{m_pairingIntervalSecs}, this);
+    });
+}
+
+void TapedeckClient::cancelPairing()
+{
+    m_pairingTimer.stop();
+    m_deviceCode.clear();
+    m_pairingExpiresAt = 0;
+}
+
+void TapedeckClient::endPairing(const QString& token, const QString& userName, const QString& error)
+{
+    cancelPairing();
+    Q_EMIT pairingFinished(token, userName, error);
+}
+
+void TapedeckClient::pollPairing()
+{
+    if(m_deviceCode.isEmpty()) {
+        return;
+    }
+    if(QDateTime::currentSecsSinceEpoch() > m_pairingExpiresAt) {
+        // Our own clock, because an expired code is answered exactly like an
+        // unknown one — the server will not tell us which this was.
+        endPairing({}, {}, tr("The pairing code expired. Start again."));
+        return;
+    }
+
+    QJsonObject body;
+    body.insert("device_code"_L1, m_deviceCode);
+
+    QNetworkReply* reply = post(endpoint("/1/pair/poll"_L1), QJsonDocument{body}, false);
+
+    QObject::connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+
+        const int status      = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+
+        if(status == 200) {
+            const QString token = obj.value("token"_L1).toString();
+            if(token.isEmpty()) {
+                endPairing({}, {}, tr("Tapedeck approved the pairing but sent no token"));
+                return;
+            }
+            // The token is in this body and nowhere else — it is deleted from
+            // the request the moment it is collected, so a dropped reply here
+            // means starting over.
+            endPairing(token, obj.value("user_name"_L1).toString(), {});
+            return;
+        }
+
+        if(status == 429) {
+            // Being asked to wait is not a failure. Back off and keep the
+            // pairing alive; the deadline above is what ends it.
+            m_pairingIntervalSecs = std::min(m_pairingIntervalSecs * 2, 30);
+            m_pairingTimer.start(std::chrono::seconds{m_pairingIntervalSecs}, this);
+            return;
+        }
+
+        const QString error = obj.value("error"_L1).toString();
+        if(error == "authorization_pending"_L1) {
+            return; // Nobody has approved it yet. Keep waiting.
+        }
+        if(error == "expired_token"_L1) {
+            endPairing({}, {}, tr("The pairing code expired. Start again."));
+            return;
+        }
+
+        endPairing({}, {}, error.isEmpty() ? reply->errorString() : error);
+    });
+}
+
+void TapedeckClient::timerEvent(QTimerEvent* event)
+{
+    if(event->timerId() == m_pairingTimer.timerId()) {
+        pollPairing();
+        return;
+    }
+
+    QObject::timerEvent(event);
 }
 } // namespace Fooyin::Tapeout
