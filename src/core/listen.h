@@ -112,7 +112,14 @@ struct Listen
     QString recordingMbid;
     QString releaseMbid;
     QString releaseGroupMbid;
+    QString releaseTrackMbid;
     QStringList artistMbids;
+    QStringList albumArtistMbids;
+    //! ponytail: first work only. A recording can map to several (classical medleys);
+    //! upgrade to QStringList if Tapedeck ever stores more than one.
+    QString workMbid;
+    //! Not an MBID, but it rides the same tag path and Tapedeck already has the column.
+    QString isrc;
 
     //! Unix seconds, UTC, and always the *start* of play.
     qint64 timestamp{0};

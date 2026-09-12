@@ -1,6 +1,7 @@
 # Local agent notes / working design docs — not part of the plugin
 CLAUDE.md
 TAPEDECK-CHANGES.md
+.claude/
 
 # Reference material (fooyin docs, example plugin, Tapedeck openapi.yaml)
 temp/

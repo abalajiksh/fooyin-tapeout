@@ -25,6 +25,8 @@
 #include <QStandardPaths>
 #include <QTimerEvent>
 
+#include <algorithm>
+
 using namespace Qt::StringLiterals;
 using namespace std::chrono_literals;
 
@@ -86,6 +88,18 @@ TapeoutController::TapeoutController(PlayerController* playerController, EngineC
                      });
     QObject::connect(m_engine, &EngineController::deviceChanged, this,
                      [this](const QString& device) { m_outputDevice = device; });
+
+    // Sampled at 1 Hz rather than read at the end, because fooyin resets the
+    // counter before announcing the change. Paused time is already excluded by
+    // fooyin, and a pause simply stops the samples, so the last one stands.
+    QObject::connect(m_playerController, &PlayerController::positionChangedSeconds, this, [this](uint64_t /*secs*/) {
+        const auto listened = static_cast<qint64>(m_playerController->currentTimeListened());
+        // Monotonic within a play: a reset means the next play has already begun,
+        // and that is the successor's tally, not this one's.
+        if(listened > m_lastListenedMs) {
+            m_lastListenedMs = listened;
+        }
+    });
 
     // A seek is the one thing a heartbeat cannot cover: between beats Tapedeck
     // counts forward from the last position it was told, which is right until
@@ -175,17 +189,15 @@ Listen TapeoutController::buildListen(const Track& track) const
 
 void TapeoutController::handleTrackChanged(const Track& track)
 {
-    // A track leaving before it crossed the threshold was skipped. fooyin has no
-    // skip signal, so the absence of `trackPlayed` for the outgoing track is the
-    // signal — and it is a real one worth keeping: Tapedeck stores skips,
-    // excludes them from every count, and has had no live source for them.
-    if(m_currentTrack.isValid() && !m_currentPlayed && m_settings->value<Settings::Tapeout::SendSkips>()) {
-        queueSkip(m_currentTrack, m_currentStartedAt);
-    }
+    // The outgoing track ends here, played or skipped.
+    finishCurrent();
 
     m_currentTrack     = track;
     m_currentStartedAt = nowSecs();
     m_currentPlayed    = false;
+    // Same title arriving again is a *new* play — repeat-one, or the track queued
+    // twice — so the tally starts from zero rather than carrying over.
+    m_lastListenedMs   = 0;
 
     if(!isEnabled() || !track.isValid()) {
         return;
@@ -196,19 +208,54 @@ void TapeoutController::handleTrackChanged(const Track& track)
 
 void TapeoutController::handleTrackPlayed(const Track& track)
 {
-    if(!m_settings->value<Settings::Tapeout::Enabled>()) {
+    Q_UNUSED(track)
+
+    // Only records that the threshold was crossed. Submitting from here would
+    // freeze `listened_ms` at the threshold itself — fooyin emits this the moment
+    // the track qualifies, not when it ends, so a track played to the last second
+    // would still report whatever the threshold happened to be.
+    m_currentPlayed = true;
+}
+
+void TapeoutController::finishCurrent()
+{
+    if(!m_currentTrack.isValid() || !m_settings->value<Settings::Tapeout::Enabled>()) {
+        m_currentTrack   = {};
+        m_currentPlayed  = false;
+        m_lastListenedMs = 0;
         return;
     }
 
-    m_currentPlayed = true;
+    // The sampled value, not a fresh read — see m_lastListenedMs. The live counter
+    // is still consulted in case this play ended between two samples, but it is
+    // only ever an improvement, never a replacement.
+    const auto listenedMs = std::max(m_lastListenedMs, static_cast<qint64>(m_playerController->currentTimeListened()));
 
-    Listen listen  = buildListen(track);
+    if(m_currentPlayed) {
+        queueListen(m_currentTrack, m_currentStartedAt, listenedMs);
+    }
+    // A track leaving before it crossed the threshold was skipped. fooyin has no
+    // skip signal, so the absence of `trackPlayed` is the signal — and it is a
+    // real one worth keeping: Tapedeck stores skips, excludes them from every
+    // count, and has had no live source for them.
+    else if(m_settings->value<Settings::Tapeout::SendSkips>()) {
+        queueSkip(m_currentTrack, m_currentStartedAt, listenedMs);
+    }
+
+    m_currentTrack   = {};
+    m_currentPlayed  = false;
+    m_lastListenedMs = 0;
+
+    flush();
+}
+
+void TapeoutController::queueListen(const Track& track, qint64 startedAt, qint64 listenedMs)
+{
+    Listen listen = buildListen(track);
     // Always the *start* of play, which is what Tapedeck stores and what its
     // duplicate window is measured against.
-    listen.timestamp = m_currentStartedAt > 0 ? m_currentStartedAt : nowSecs();
-    // fooyin already excludes paused time from this, which is exactly what the
-    // column means on Tapedeck's side.
-    listen.listenedMs = static_cast<qint64>(m_playerController->currentTimeListened());
+    listen.timestamp  = startedAt > 0 ? startedAt : nowSecs();
+    listen.listenedMs = listenedMs;
 
     if(!listen.isValid()) {
         qCDebug(TAPEOUT) << "Not submitting a track with no title or artist";
@@ -216,21 +263,16 @@ void TapeoutController::handleTrackPlayed(const Track& track)
     }
 
     m_queue->add(listen);
-    flush();
 }
 
-void TapeoutController::queueSkip(const Track& track, qint64 startedAt)
+void TapeoutController::queueSkip(const Track& track, qint64 startedAt, qint64 listenedMs)
 {
-    if(!m_settings->value<Settings::Tapeout::Enabled>()) {
-        return;
-    }
-
     Listen listen    = buildListen(track);
     listen.timestamp = startedAt > 0 ? startedAt : nowSecs();
     listen.skipped   = true;
     // The whole point of pairing this with `skipped`: how far in the listener
     // gave up is the difference between disliking a track and mis-clicking.
-    listen.listenedMs = static_cast<qint64>(m_playerController->currentTimeListened());
+    listen.listenedMs = listenedMs;
 
     if(listen.isValid()) {
         m_queue->add(listen);
@@ -244,15 +286,10 @@ void TapeoutController::handlePlayStateChanged(Player::PlayState state, Player::
     if(state == Player::PlayState::Stopped) {
         m_nowPlayingTimer.stop();
 
-        // A skip is a skip whether the next track follows or playback simply
-        // stops, so the same rule applies here.
-        if(m_currentTrack.isValid() && !m_currentPlayed && m_settings->value<Settings::Tapeout::SendSkips>()) {
-            queueSkip(m_currentTrack, m_currentStartedAt);
-            flush();
-        }
-
-        m_currentTrack = {};
-        m_currentPlayed = false;
+        // Playback ending is as much an end of play as the next track starting,
+        // and the last track of a queue only ever ends this way — before, it was
+        // submitted at the threshold and this path only had skips to worry about.
+        finishCurrent();
 
         if(isEnabled()) {
             m_client->clearNowPlaying();
@@ -371,10 +408,12 @@ void TapeoutController::shutdown()
     m_nowPlayingTimer.stop();
     m_retryTimer.stop();
 
-    // A track playing at exit was skipped as far as the threshold is concerned.
-    if(m_currentTrack.isValid() && !m_currentPlayed && m_settings->value<Settings::Tapeout::SendSkips>()) {
-        queueSkip(m_currentTrack, m_currentStartedAt);
-    }
+    // Exiting mid-track ends the play like anything else: a listen if it crossed
+    // the threshold, a skip if not. This has to happen before the queue is
+    // written — since submission moved to track-end, a track that qualified but
+    // was still playing has not been sent anywhere yet, and a clean exit is the
+    // last chance to keep it.
+    finishCurrent();
 
     // The queue is written synchronously here — its own timer will not get
     // another chance to fire.

@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.19)
 # as its submission_client_version) are both generated from it.
 project(
     tapeout
-    VERSION 0.2.0
+    VERSION 0.3.0
     DESCRIPTION "Tapedeck scrobbling for fooyin"
     HOMEPAGE_URL "https://github.com/abalajiksh/fooyin-tapeout"
     LANGUAGES CXX
@@ -16,7 +16,10 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(Fooyin REQUIRED)
+# Fooyin's config is AnyNewerVersion, so this reads as a minimum. fooyin plugins
+# are ABI-coupled to the host, and nothing at load time catches a mismatch — the
+# build is the only place it can be caught, so it is caught here.
+find_package(Fooyin 0.12.6 REQUIRED)
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Network Widgets)
 
 configure_file(src/tapeoutversion.h.in ${CMAKE_CURRENT_BINARY_DIR}/tapeoutversion.h @ONLY)
@@ -49,3 +52,22 @@ create_fooyin_plugin(
 )
 
 target_include_directories(tapeout PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# Off by default: a plugin build has no reason to pay for it.
+# Enable with -DTAPEOUT_TESTS=ON, then ctest --test-dir build.
+option(TAPEOUT_TESTS "Build Tapeout's tests" OFF)
+
+if(TAPEOUT_TESTS)
+    enable_testing()
+
+    add_executable(tapeout_roundtrip tests/roundtrip.cpp src/core/listen.cpp)
+    target_link_libraries(tapeout_roundtrip PRIVATE Fooyin::Core Qt6::Core)
+    target_include_directories(
+        tapeout_roundtrip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_BINARY_DIR}
+    )
+    # assert() is a no-op under NDEBUG, which every release build sets. Without
+    # this the test passes by doing nothing at all.
+    target_compile_options(tapeout_roundtrip PRIVATE -UNDEBUG)
+
+    add_test(NAME roundtrip COMMAND tapeout_roundtrip)
+endif()

@@ -181,8 +181,14 @@ QJsonObject Listen::toJson() const
     insertIfSet(info, "recording_mbid"_L1, recordingMbid);
     insertIfSet(info, "release_mbid"_L1, releaseMbid);
     insertIfSet(info, "release_group_mbid"_L1, releaseGroupMbid);
+    insertIfSet(info, "release_track_mbid"_L1, releaseTrackMbid);
+    insertIfSet(info, "work_mbid"_L1, workMbid);
+    insertIfSet(info, "isrc"_L1, isrc);
     if(!artistMbids.empty()) {
         info.insert("artist_mbids"_L1, QJsonArray::fromStringList(artistMbids));
+    }
+    if(!albumArtistMbids.empty()) {
+        info.insert("album_artist_mbids"_L1, QJsonArray::fromStringList(albumArtistMbids));
     }
 
     // Tapedeck believes this outright; a single name is not a credit list and is
@@ -234,6 +240,9 @@ QJsonObject Listen::serialise() const
     insertIfSet(obj, "recording_mbid"_L1, recordingMbid);
     insertIfSet(obj, "release_mbid"_L1, releaseMbid);
     insertIfSet(obj, "release_group_mbid"_L1, releaseGroupMbid);
+    insertIfSet(obj, "release_track_mbid"_L1, releaseTrackMbid);
+    insertIfSet(obj, "work_mbid"_L1, workMbid);
+    insertIfSet(obj, "isrc"_L1, isrc);
     insertIfSet(obj, "chain_name"_L1, chainName);
 
     if(!artists.empty()) {
@@ -241,6 +250,9 @@ QJsonObject Listen::serialise() const
     }
     if(!artistMbids.empty()) {
         obj.insert("artist_mbids"_L1, QJsonArray::fromStringList(artistMbids));
+    }
+    if(!albumArtistMbids.empty()) {
+        obj.insert("album_artist_mbids"_L1, QJsonArray::fromStringList(albumArtistMbids));
     }
     if(skipped) {
         obj.insert("skipped"_L1, true);
@@ -275,6 +287,9 @@ Listen Listen::deserialise(const QJsonObject& obj)
     listen.recordingMbid    = obj.value("recording_mbid"_L1).toString();
     listen.releaseMbid      = obj.value("release_mbid"_L1).toString();
     listen.releaseGroupMbid = obj.value("release_group_mbid"_L1).toString();
+    listen.releaseTrackMbid = obj.value("release_track_mbid"_L1).toString();
+    listen.workMbid         = obj.value("work_mbid"_L1).toString();
+    listen.isrc             = obj.value("isrc"_L1).toString();
     listen.chainName        = obj.value("chain_name"_L1).toString();
     listen.skipped          = obj.value("skipped"_L1).toBool();
 
@@ -300,8 +315,9 @@ Listen Listen::deserialise(const QJsonObject& obj)
         }
         return out;
     };
-    listen.artists     = readStrings("artists"_L1);
-    listen.artistMbids = readStrings("artist_mbids"_L1);
+    listen.artists          = readStrings("artists"_L1);
+    listen.artistMbids      = readStrings("artist_mbids"_L1);
+    listen.albumArtistMbids = readStrings("album_artist_mbids"_L1);
 
     // Quality and device are stored already in wire shape, so they are replayed
     // as-is rather than round-tripped through the structs.
@@ -373,18 +389,28 @@ Listen listenFromTrack(const Track& track)
     listen.recordingMbid    = normaliseMbid(firstExtraTag(track, u"MUSICBRAINZ_TRACKID"_s));
     listen.releaseMbid      = normaliseMbid(firstExtraTag(track, u"MUSICBRAINZ_ALBUMID"_s));
     listen.releaseGroupMbid = normaliseMbid(firstExtraTag(track, u"MUSICBRAINZ_RELEASEGROUPID"_s));
+    listen.releaseTrackMbid = normaliseMbid(firstExtraTag(track, u"MUSICBRAINZ_RELEASETRACKID"_s));
+    listen.workMbid         = normaliseMbid(firstExtraTag(track, u"MUSICBRAINZ_WORKID"_s));
+    // ISRC is not a UUID, so it skips normaliseMbid and is taken as tagged.
+    listen.isrc = firstExtraTag(track, u"ISRC"_s).trimmed();
 
-    if(track.hasExtraTag(u"MUSICBRAINZ_ARTISTID"_s)) {
-        const QStringList raw = track.extraTag(u"MUSICBRAINZ_ARTISTID"_s);
-        for(const QString& value : raw) {
+    const auto readMbids = [&track](const QString& tag) {
+        QStringList out;
+        for(const QString& value : track.extraTag(tag)) {
             if(const QString mbid = normaliseMbid(value); !mbid.isEmpty()) {
-                listen.artistMbids.append(mbid);
+                out.append(mbid);
             }
         }
-    }
+        return out;
+    };
+    listen.artistMbids      = readMbids(u"MUSICBRAINZ_ARTISTID"_s);
+    listen.albumArtistMbids = readMbids(u"MUSICBRAINZ_ALBUMARTISTID"_s);
 
     AudioQuality quality;
-    quality.codec     = track.codec();
+    // Lowercased to match `container` and every other scrobbling source. fooyin
+    // reports "FLAC" where Plex and friends report "flac", and Tapedeck groups on
+    // the literal string — two spellings of one codec split every stat built on it.
+    quality.codec     = track.codec().trimmed().toLower();
     quality.container = QFileInfo{track.filepath()}.suffix().toLower();
     if(track.bitrate() > 0) {
         quality.bitrate = track.bitrate();

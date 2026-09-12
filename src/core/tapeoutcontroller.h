@@ -67,7 +67,15 @@ private:
     [[nodiscard]] bool isEnabled() const;
     [[nodiscard]] Listen buildListen(const Track& track) const;
     [[nodiscard]] SessionInfo currentSession() const;
-    void queueSkip(const Track& track, qint64 startedAt);
+    /*!
+     * Submits whatever is on the deck — as a listen if it crossed fooyin's played
+     * threshold, as a skip otherwise — and clears it so it cannot go twice. Every
+     * path that ends a play routes through here, which is the only point at which
+     * fooyin has counted the whole play and not yet reset for what follows.
+     */
+    void finishCurrent();
+    void queueListen(const Track& track, qint64 startedAt, qint64 listenedMs);
+    void queueSkip(const Track& track, qint64 startedAt, qint64 listenedMs);
     void flush();
     void updateNowPlaying(const Track& track);
 
@@ -91,6 +99,17 @@ private:
     qint64 m_currentStartedAt{0};
     //! Whether the current track crossed fooyin's played threshold.
     bool m_currentPlayed{false};
+    /*!
+     * Last sampled value of PlayerController::currentTimeListened(), taken once a
+     * second while the track plays.
+     *
+     * It cannot be read when the play ends: fooyin resets the counter *before*
+     * emitting currentTrackChanged, so by the time any end-of-play handler runs it
+     * may already be 0. That is not hypothetical — replaying the same track
+     * submitted a full listen with listened_ms of 0. Sampling forward is the only
+     * way to hold a value that is still true at the end.
+     */
+    qint64 m_lastListenedMs{0};
     //! True while a submission is in flight, so the queue is not sent twice.
     bool m_submitting{false};
 };
