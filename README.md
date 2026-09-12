@@ -50,9 +50,10 @@ absolute path under fooyin's *own* prefix — `/usr/lib64/fooyin/plugins` on Fed
 `CMAKE_INSTALL_PREFIX` does not move the plugin, and fooyin has no per-user plugin directory
 to install into instead.
 
-That path is Fedora's. It differs per platform — Debian uses `lib/x86_64-linux-gnu`, and
-Windows and macOS differ again. `cmake --install` always gets it right because it reads the
-value from fooyin's own config; to see where it will go:
+That path is Fedora's. It follows whatever prefix and library directory fooyin itself was
+installed with, so a source-built fooyin under `/usr/local` puts plugins in
+`/usr/local/lib/fooyin/plugins` instead. `cmake --install` always gets it right because it
+reads the value from fooyin's own config; to see where it will go:
 
 ```bash
 grep FOOYIN_PLUGIN_INSTALL_DIR "$(dirname "$(find / -name FooyinConfig.cmake 2>/dev/null | head -1)")/FooyinConfig.cmake"
@@ -66,6 +67,38 @@ sudo ln -sf "$PWD/build/fyplugin_tapeout.so" /usr/lib64/fooyin/plugins/
 
 The plugin is ABI-coupled to fooyin and nothing catches a mismatch at load time, so it must be
 rebuilt whenever fooyin is upgraded. `find_package` enforces the minimum at build time.
+
+### Other distributions
+
+Everything above assumes Fedora, where `fooyin-devel` provides the headers. Anywhere else,
+fooyin has to be built from source first — its `.deb`, AppImage and Flatpak builds ship the
+application only. On Ubuntu or Debian:
+
+```bash
+# fooyin's own build dependencies
+sudo apt install g++ git cmake pkg-config ninja-build libglu1-mesa-dev \
+  libxkbcommon-dev zlib1g-dev libasound2-dev libtag1-dev libicu-dev \
+  libpipewire-0.3-dev libpulse-dev qt6-base-dev libqt6sql6-sqlite \
+  libqt6svg6-dev qt6-tools-dev qt6-tools-dev-tools qt6-l10n-tools \
+  libavcodec-dev libavfilter-dev libavformat-dev libavutil-dev libswresample-dev
+
+git clone --depth 1 --branch v0.12.6 https://github.com/fooyin/fooyin
+cmake -S fooyin -G Ninja -B fooyin/build
+cmake --build fooyin/build
+sudo cmake --install fooyin/build            # installs to /usr/local
+```
+
+Then build Tapeout exactly as above — `find_package` searches `/usr/local` by default, and the
+plugin follows fooyin's prefix into `/usr/local/lib/fooyin/plugins`.
+
+> **Run the fooyin you just built** (`/usr/local/bin/fooyin`). If fooyin's `.deb` is also
+> installed, `/usr/bin/fooyin` is a different build that searches its own prefix and will not
+> see the plugin. Forcing the two together is worse than it not loading: there is no ABI check
+> at load time, and the same fooyin version built by a different toolchain is not guaranteed
+> compatible. Either remove the `.deb` or accept that only the source build gets the plugin.
+
+Flatpak and AppImage installs cannot load third-party plugins at all — one is sandboxed under
+its own prefix, the other is a read-only image.
 
 ### Tests
 
