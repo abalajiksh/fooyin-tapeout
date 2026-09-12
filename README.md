@@ -26,8 +26,13 @@ It runs alongside your other scrobbling services rather than replacing them.
 
 ## Building
 
-Requires fooyin 0.12.6 or newer **and its development files** (`fooyin-devel` on Fedora,
-`libfooyin-dev` on Debian), Qt 6.4+, CMake 3.19+ and a C++23 compiler.
+Requires fooyin 0.12.6 or newer **and its development files**, Qt 6.4+, CMake 3.19+ and a
+C++23 compiler.
+
+Fedora packages those development files as `fooyin-devel` in the official repositories. No
+other distribution currently packages fooyin at all — its `.deb`, AppImage, Flatpak, FreeBSD
+and Windows builds come from [fooyin's own releases](https://github.com/fooyin/fooyin/releases)
+and ship no headers — so everywhere else you will need to build fooyin from source first.
 
 > **Tested only on Fedora 44 (Sway desktop), x86-64.** That is the sole configuration this
 > plugin has been built and run on. fooyin itself ships BSD, Debian, Windows and ARM builds,
