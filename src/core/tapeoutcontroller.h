@@ -115,6 +115,17 @@ private:
      * as "not starred here" and take it away.
      */
     void handleTracksChanged(const TrackList& tracks);
+    /*!
+     * Holds a track's cover back until its listen has actually been stored.
+     *
+     * Tapedeck attaches a cover by filling `artwork_url` on the listens of that
+     * record, so an upload sent while the track is still playing updates
+     * nothing and leaves the file orphaned — and a record with no listens yet
+     * is precisely the one whose artwork is missing.
+     */
+    void rememberArtwork(const Track& track);
+    //! Offers the covers whose listens Tapedeck has just confirmed.
+    void offerPendingArtwork(const std::vector<Listen>& stored);
 
     PlayerController* m_playerController;
     EngineController* m_engine;
@@ -171,6 +182,9 @@ private:
      * the first time fooyin rescans.
      */
     QHash<QString, int> m_ratings;
+
+    //! Album key to one track of it, awaiting its listen landing. See rememberArtwork.
+    QHash<QString, Track> m_artworkPending;
 };
 } // namespace Tapeout
 } // namespace Fooyin

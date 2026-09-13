@@ -212,6 +212,9 @@ void TapedeckClient::validateToken()
         if(const QJsonValue chain = obj.value("default_chain_id"_L1); chain.isDouble()) {
             info.defaultChainId = chain.toInt();
         }
+        // Kept, because it is the only place the default is ever stated — the
+        // chain list carries no such flag.
+        m_defaultChainId = info.defaultChainId;
 
         Q_EMIT tokenValidated(info);
     });
@@ -476,9 +479,10 @@ void TapedeckClient::fetchChains()
         const QJsonArray array = QJsonDocument::fromJson(reply->readAll()).object().value("chains"_L1).toArray();
         for(const auto& value : array) {
             const QJsonObject obj = value.toObject();
-            chains.append({.id        = obj.value("id"_L1).toInt(),
+            const int id = obj.value("id"_L1).toInt();
+            chains.append({.id        = id,
                            .name      = obj.value("name"_L1).toString(),
-                           .isDefault = obj.value("is_default"_L1).toBool()});
+                           .isDefault = m_defaultChainId && *m_defaultChainId == id});
         }
 
         Q_EMIT chainsFetched(chains);

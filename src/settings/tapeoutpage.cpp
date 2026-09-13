@@ -399,7 +399,9 @@ void TapeoutPageWidget::showChains(const QList<ChainInfo>& chains)
     m_chainName->addItem(tr("Resolved by Tapedeck"), QString{});
 
     for(const ChainInfo& chain : chains) {
-        const QString label = chain.isDefault ? tr("%1 (default)").arg(chain.name) : chain.name;
+        // "this token's default", not "the default chain" — the distinction the
+        // dry run also draws, and the reason a chain has no such flag of its own.
+        const QString label = chain.isDefault ? tr("%1 (this token's default)").arg(chain.name) : chain.name;
         m_chainName->addItem(label, chain.name);
     }
 

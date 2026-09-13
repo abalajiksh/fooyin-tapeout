@@ -256,7 +256,20 @@ void TapeoutController::offerMedia(const Track& track)
         }
     }
 
-    if(!m_settings->value<SendArtwork>() || track.album().isEmpty() || !m_audioLoader) {
+    // Artwork is deliberately *not* offered here. Tapedeck attaches a cover by
+    // filling `artwork_url` on the listens of that record, so an upload sent
+    // before the listen exists updates nothing and the file is stored orphaned
+    // — and a record with no listens yet is exactly the one whose artwork is
+    // missing. It is held until the listen has actually landed; see
+    // rememberArtwork and handleSubmitResult.
+}
+
+void TapeoutController::rememberArtwork(const Track& track)
+{
+    using namespace Settings::Tapeout;
+
+    if(!m_settings->value<SendArtwork>() || track.artist().isEmpty() || track.album().isEmpty()
+       || !m_audioLoader) {
         return;
     }
 
@@ -265,9 +278,32 @@ void TapeoutController::offerMedia(const Track& track)
     // artist. On a compilation that means offering the sleeve once per
     // contributor — which is what Tapedeck's own album keying asks for, and the
     // repeats cost a question each rather than an upload.
-    if(const QString key = mediaKey(artist, track.album()); !m_artworkOffered.contains(key)) {
+    const QString key = mediaKey(track.artist(), track.album());
+    if(!m_artworkOffered.contains(key)) {
+        m_artworkPending.insert(key, track);
+    }
+}
+
+void TapeoutController::offerPendingArtwork(const std::vector<Listen>& stored)
+{
+    for(const Listen& listen : stored) {
+        // A skip stores no listen row for the cover to attach to, so there is
+        // nothing for an upload to cover.
+        if(listen.skipped || listen.album.isEmpty()) {
+            continue;
+        }
+
+        const QString key = mediaKey(listen.artist, listen.album);
+        const auto pending = m_artworkPending.constFind(key);
+        if(pending == m_artworkPending.constEnd() || m_artworkOffered.contains(key)) {
+            continue;
+        }
+
+        const Track track = *pending;
+        m_artworkPending.erase(pending);
         m_artworkOffered.insert(key);
-        m_client->offerArtwork(artist, track.album(),
+
+        m_client->offerArtwork(listen.artist, listen.album,
                                normaliseMbid(firstExtraTag(track, u"MUSICBRAINZ_ALBUMID"_s)),
                                [track, loader = m_audioLoader] { return coverFromTrack(track, *loader); });
     }
@@ -329,6 +365,8 @@ void TapeoutController::queueListen(const Track& track, qint64 startedAt, qint64
         return;
     }
 
+    // Held, not sent: the cover can only attach to a listen that exists.
+    rememberArtwork(track);
     m_queue->add(listen);
 }
 
@@ -506,6 +544,9 @@ void TapeoutController::handleSubmitResult(const SubmitResult& result, const std
     // Accepted and duplicate both mean Tapedeck has it. Rejected listens are bad
     // data and would be refused identically forever, so they go too.
     m_queue->remove(sent);
+
+    // Only now are there rows for a cover to attach to.
+    offerPendingArtwork(sent);
 
     if(!m_queue->isEmpty()) {
         flush(); // More than one batch was waiting.

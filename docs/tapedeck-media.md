@@ -130,14 +130,28 @@ Responses:
 
 | Code | Body | When |
 |---|---|---|
-| 200 | `{"artwork_url": "/api/v1/art/upload/….jpg"}` | Stored. |
+| 200 | `{"artwork_url": "/api/v1/art/upload/….jpg", "listens_covered": N}` | Stored, and attached to N listens. |
 | 200 | `{"already_held": true}` | Something filled the cover between the GET and this. Not an error. |
 | 400 | error | No image, or a blank artist or album. |
 | 401 | error | No token, or no `write` scope. |
 | 413 | error | Larger than 8 MB. Tapeout drops these client-side, so this should be rare. |
 | 415 | error | Not an image type this server stores. |
 
+⚠️ **`listens_covered: 0` means the cover was stored and orphaned.** Nothing references
+a file that covered no listens. It is reported rather than refused because the upload did
+succeed and the caller is the one that can tell whether that was expected — but a client
+that sees it has got its ordering wrong, which is exactly what happened the first time
+Tapeout ran this path (below).
+
 ### What Tapeout sends
+
+**After the listen has been stored, never on track change.** This is the ordering the
+`UPDATE` above forces and it is not obvious: a record with no listens yet is precisely the
+record whose artwork is missing, so an upload sent while the track is still playing
+matches no rows and leaves the file orphaned. Tapeout holds the cover from the moment the
+listen is queued and offers it only once Tapedeck has confirmed the submission — which
+also means a skipped track never uploads one, since a skip stores no row for it to attach
+to.
 
 Once per `(artist, album)` per run. The embedded front cover as the file stores it —
 never re-encoded, read through fooyin's own `AudioLoader::readTrackCover` — or, where
@@ -158,6 +172,6 @@ to work around in the client.
 - [ ] `POST /api/v1/lyrics/library`, `write` scope → `remember_library`
 - [ ] `GET /api/v1/art/library` → `album_artwork(...).is_some()` (+ `cover_override`)
 - [ ] `POST /api/v1/art/library` → `store_upload` + `UPDATE scrobbles SET artwork_url`
-- [ ] Multipart read by field name, not `read_one_image`
+- [x] Multipart read by field name, not `read_one_image`
 - [ ] `openapi.yaml` entries under the Statistics and Library tags
 - [ ] Flip Tapeout's two switches on and drop the "off by default" note from its README

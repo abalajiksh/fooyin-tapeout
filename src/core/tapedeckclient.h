@@ -78,6 +78,16 @@ struct ChainInfo
 {
     int id{0};
     QString name;
+    /*!
+     * Whether this is the chain the *token* falls back to — rung 3 of the
+     * ladder.
+     *
+     * Not a property of the chain, whatever `openapi.yaml`'s `Chain` schema
+     * says: the live server sends no `is_default` at all, and a default is
+     * something a token has rather than something a chain is. Filled in from
+     * the last token validation, so it is simply absent until there has been
+     * one.
+     */
     bool isDefault{false};
 };
 
@@ -270,6 +280,9 @@ private:
     std::shared_ptr<NetworkAccessManager> m_network;
     QUrl m_serverUrl;
     QString m_token;
+
+    //! Last seen on a valid token, for marking that chain in the picker.
+    std::optional<int> m_defaultChainId;
 
     QBasicTimer m_pairingTimer;
     QString m_deviceCode;
