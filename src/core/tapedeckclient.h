@@ -99,7 +99,11 @@ struct ScrobbleRule
     bool known{false};
 
     //! Share of the track that must have played, 0.05–1.0, already clamped by the server.
+    //! **This is the number to do arithmetic with**; `percent` is for showing a person.
     double fraction{0.5};
+    //! The same share worded as a percentage. Shown rather than recomputed, so a
+    //! settings screen says exactly what Tapedeck's own does.
+    double percent{50.0};
     //! Seconds after which it counts regardless of the fraction.
     int afterSecs{240};
     //! The only rule left when the track's length is unknown — the fraction is unanswerable.
@@ -132,11 +136,12 @@ struct ChainInfo
      * Whether this is the chain the *token* falls back to — rung 3 of the
      * ladder.
      *
-     * Not a property of the chain, whatever `openapi.yaml`'s `Chain` schema
-     * says: the live server sends no `is_default` at all, and a default is
-     * something a token has rather than something a chain is. Filled in from
-     * the last token validation, so it is simply absent until there has been
-     * one.
+     * **A chain is not default for anything by itself.** Being the default is a
+     * property of the thing pointing *at* a chain, and the token is one such
+     * thing. There has never been an `is_default` in either direction — the
+     * schema documented one for a long time and it was fiction, corrected in
+     * Tapedeck 0.115.1. Filled in from `default_chain_id` on the last token
+     * validation, so it is simply absent until there has been one.
      */
     bool isDefault{false};
 };

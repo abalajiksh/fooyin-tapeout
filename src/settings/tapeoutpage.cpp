@@ -526,7 +526,10 @@ void TapeoutPageWidget::showScrobbleRule(const ScrobbleRule& rule)
         text += " "_L1 + tr("That is your instance's standard.");
     }
     else if(rule.source == "user"_L1) {
-        text += " "_L1 + tr("Your own setting, not the %1% standard.").arg(rule.defaultPercent, 0, 'g', 3);
+        text += " "_L1
+              + tr("Your own setting, not the %1% / %2s standard.")
+                    .arg(rule.defaultPercent, 0, 'g', 3)
+                    .arg(rule.defaultAfterSecs);
     }
 
     m_ruleResult->setText(text);

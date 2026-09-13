@@ -176,8 +176,15 @@ void theScrobbleRuleIsWhicheverComesFirst()
     assert(!rule.qualifies(180000, 0));
     assert(!rule.qualifies(0, 0));
 
+    // `percent` is the server's own wording and is shown verbatim; `fraction`
+    // is what the arithmetic uses. A client that recomputed one from the other
+    // would round differently from the screen the listener set it on.
+    rule.percent = 50.0;
+    assert(rule.describe().startsWith(u"50% or 4:00"_s));
+
     // A listener who set 100% gets no early pass from the fraction.
-    ScrobbleRule strict{.known = true, .fraction = 1.0, .afterSecs = 3600, .noDurationAfterSecs = 3600};
+    ScrobbleRule strict{
+        .known = true, .fraction = 1.0, .percent = 100.0, .afterSecs = 3600, .noDurationAfterSecs = 3600};
     assert(!strict.qualifies(180000, 179000));
     assert(strict.qualifies(180000, 180000));
 }

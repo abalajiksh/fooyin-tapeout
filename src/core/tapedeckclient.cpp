@@ -106,8 +106,10 @@ bool ScrobbleRule::qualifies(qint64 durationMs, qint64 listenedMs) const
 QString ScrobbleRule::describe() const
 {
     const QString after = QStringLiteral("%1:%2").arg(afterSecs / 60).arg(afterSecs % 60, 2, 10, QChar{u'0'});
+    // `percent` rather than fraction × 100: the server sends both, and the
+    // percentage is the one worded for a person to read.
     return QCoreApplication::translate("ScrobbleRule", "%1% or %2, whichever comes first")
-        .arg(fraction * 100.0, 0, 'g', 3)
+        .arg(percent, 0, 'g', 3)
         .arg(after);
 }
 
@@ -568,11 +570,18 @@ void TapedeckClient::fetchScrobbleRule()
 
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if(status != 200) {
-            // Nothing is emitted, so fooyin's own threshold keeps standing in.
-            // A 500 here explicitly does *not* mean "they have not set one" —
-            // the server says so — and inventing the default would have us
-            // follow a rule it is not applying.
-            qCDebug(TAPEOUT) << "Could not read the scrobble rule:" << status;
+            // Nothing is emitted either way, so whatever rule was already in hand
+            // keeps standing. A 500 explicitly does *not* mean "they have not set
+            // one" — the default is an answer and is withheld after a failed look
+            // — so inventing 50/240 here would have us follow a rule the server
+            // is not applying, and report it to the user as theirs.
+            if(status == 404) {
+                qCDebug(TAPEOUT) << "This Tapedeck has no scrobble-settings endpoint; using fooyin's threshold";
+            }
+            else {
+                qCWarning(TAPEOUT) << "Could not read the scrobble rule:" << status
+                                   << "- keeping the rule already in force";
+            }
             return;
         }
 
@@ -581,6 +590,7 @@ void TapedeckClient::fetchScrobbleRule()
         ScrobbleRule rule;
         rule.known    = true;
         rule.fraction = obj.value("fraction"_L1).toDouble(rule.fraction);
+        rule.percent  = obj.value("percent"_L1).toDouble(rule.fraction * 100.0);
         rule.afterSecs = obj.value("after_secs"_L1).toInt(rule.afterSecs);
         // Equal to after_secs today, but read rather than assumed: it is named
         // separately precisely so a client does not decide that for itself.
@@ -588,6 +598,15 @@ void TapedeckClient::fetchScrobbleRule()
         rule.source              = obj.value("source"_L1).toString();
         rule.defaultPercent      = obj.value("default_percent"_L1).toDouble(rule.defaultPercent);
         rule.defaultAfterSecs    = obj.value("default_after_secs"_L1).toInt(rule.defaultAfterSecs);
+
+        // Always `either` today, and qualifies() implements exactly that. Read
+        // and checked rather than ignored: if this ever gains another value the
+        // failure is silent double-counting, and a line in the log is the only
+        // warning anyone would get.
+        if(const QString kind = obj.value("rule"_L1).toString(); !kind.isEmpty() && kind != "either"_L1) {
+            qCWarning(TAPEOUT) << "Tapedeck reports an unfamiliar scrobble rule" << kind
+                               << "- still reading it as whichever-comes-first";
+        }
 
         // The server clamps before answering, so a sane value here is the one it
         // actually uses. This guards only against a reply that omitted the field.

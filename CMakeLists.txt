@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.19)
 # as its submission_client_version) are both generated from it.
 project(
     tapeout
-    VERSION 0.5.0
+    VERSION 0.5.1
     DESCRIPTION "Tapedeck scrobbling for fooyin"
     HOMEPAGE_URL "https://github.com/abalajiksh/fooyin-tapeout"
     LANGUAGES CXX
