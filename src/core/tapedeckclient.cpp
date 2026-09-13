@@ -103,6 +103,30 @@ bool ScrobbleRule::qualifies(qint64 durationMs, qint64 listenedMs) const
     return static_cast<double>(listenedMs) >= static_cast<double>(durationMs) * fraction;
 }
 
+ScrobbleRule ScrobbleRule::fromJson(const QJsonObject& obj)
+{
+    ScrobbleRule rule;
+    rule.fraction = obj.value("fraction"_L1).toDouble(0.0);
+
+    // The server clamps to 0.05–1.0 before answering, so a sane value here is
+    // the one it genuinely applies. This only catches a body that omitted it.
+    if(rule.fraction <= 0.0 || rule.fraction > 1.0) {
+        return {}; // known stays false.
+    }
+
+    rule.known     = true;
+    rule.percent   = obj.value("percent"_L1).toDouble(rule.fraction * 100.0);
+    rule.afterSecs = obj.value("after_secs"_L1).toInt(rule.afterSecs);
+    // Equal to after_secs today, but read rather than assumed: it is named
+    // separately precisely so a client does not decide that for itself.
+    rule.noDurationAfterSecs = obj.value("no_duration_after_secs"_L1).toInt(rule.afterSecs);
+    rule.source              = obj.value("source"_L1).toString();
+    rule.defaultPercent      = obj.value("default_percent"_L1).toDouble(rule.defaultPercent);
+    rule.defaultAfterSecs    = obj.value("default_after_secs"_L1).toInt(rule.defaultAfterSecs);
+
+    return rule;
+}
+
 QString ScrobbleRule::describe() const
 {
     const QString after = QStringLiteral("%1:%2").arg(afterSecs / 60).arg(afterSecs % 60, 2, 10, QChar{u'0'});
@@ -587,18 +611,6 @@ void TapedeckClient::fetchScrobbleRule()
 
         const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
 
-        ScrobbleRule rule;
-        rule.known    = true;
-        rule.fraction = obj.value("fraction"_L1).toDouble(rule.fraction);
-        rule.percent  = obj.value("percent"_L1).toDouble(rule.fraction * 100.0);
-        rule.afterSecs = obj.value("after_secs"_L1).toInt(rule.afterSecs);
-        // Equal to after_secs today, but read rather than assumed: it is named
-        // separately precisely so a client does not decide that for itself.
-        rule.noDurationAfterSecs = obj.value("no_duration_after_secs"_L1).toInt(rule.afterSecs);
-        rule.source              = obj.value("source"_L1).toString();
-        rule.defaultPercent      = obj.value("default_percent"_L1).toDouble(rule.defaultPercent);
-        rule.defaultAfterSecs    = obj.value("default_after_secs"_L1).toInt(rule.defaultAfterSecs);
-
         // Always `either` today, and qualifies() implements exactly that. Read
         // and checked rather than ignored: if this ever gains another value the
         // failure is silent double-counting, and a line in the log is the only
@@ -608,10 +620,10 @@ void TapedeckClient::fetchScrobbleRule()
                                << "- still reading it as whichever-comes-first";
         }
 
-        // The server clamps before answering, so a sane value here is the one it
-        // actually uses. This guards only against a reply that omitted the field.
-        if(rule.fraction <= 0.0 || rule.fraction > 1.0) {
-            qCWarning(TAPEOUT) << "Ignoring an out-of-range scrobble fraction:" << rule.fraction;
+        const ScrobbleRule rule = ScrobbleRule::fromJson(obj);
+        if(!rule.known) {
+            qCWarning(TAPEOUT) << "Tapedeck answered a scrobble rule with no usable fraction; keeping the "
+                                  "rule already in force";
             return;
         }
 

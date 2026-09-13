@@ -25,6 +25,7 @@
 #include <vector>
 
 class QJsonDocument;
+class QJsonObject;
 class QNetworkReply;
 class QNetworkRequest;
 
@@ -125,6 +126,19 @@ struct ScrobbleRule
 
     //! One line for a settings screen, e.g. "50% or 4:00, whichever comes first".
     [[nodiscard]] QString describe() const;
+
+    /*!
+     * Reads the `/api/v1/scrobble-settings` body.
+     *
+     * Separate from the request so it can be held against the bytes the server
+     * actually sends — every bug this client has had against Tapedeck was a
+     * parse agreeing with a document rather than with a payload.
+     *
+     * A body with no usable `fraction` returns an unknown rule, never a
+     * plausible-looking default: the caller must be able to tell "they run
+     * 50/240" from "we could not find out".
+     */
+    [[nodiscard]] static ScrobbleRule fromJson(const QJsonObject& obj);
 };
 
 //! One signal chain, for the picker. Tapedeck resolves a chain by *name*, so that is what is stored.

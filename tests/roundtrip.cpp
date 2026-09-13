@@ -14,6 +14,7 @@
 #include "core/tapedeckclient.h"
 #include "core/trackmedia.h"
 
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QLoggingCategory>
 
@@ -188,6 +189,48 @@ void theScrobbleRuleIsWhicheverComesFirst()
     assert(!strict.qualifies(180000, 179000));
     assert(strict.qualifies(180000, 180000));
 }
+/*
+ * Held against the exact body a live Tapedeck 0.115.1 returns. Both bugs this
+ * client has had against the server were a parse that agreed with a document
+ * and not with a payload, so the payload is what the test carries.
+ */
+void theScrobbleRuleParsesTheLiveBody()
+{
+    const auto body = QJsonDocument::fromJson(R"({"after_secs":240,"default_after_secs":240,)"
+                                              R"("default_percent":50.0,"fraction":0.5,)"
+                                              R"("no_duration_after_secs":240,"percent":50.0,)"
+                                              R"("rule":"either","source":"default"})")
+                          .object();
+
+    const ScrobbleRule rule = ScrobbleRule::fromJson(body);
+
+    assert(rule.known);
+    assert(rule.fraction == 0.5);
+    assert(rule.percent == 50.0);
+    assert(rule.afterSecs == 240);
+    assert(rule.noDurationAfterSecs == 240);
+    assert(rule.source == u"default"_s);
+    assert(rule.defaultPercent == 50.0);
+    assert(rule.defaultAfterSecs == 240);
+    assert(rule.describe() == u"50% or 4:00, whichever comes first"_s);
+
+    // An empty body must read as "we could not find out", never as the
+    // convention wearing the listener's name — the spec is explicit that the
+    // default is an answer and is withheld after a failed look.
+    assert(!ScrobbleRule::fromJson({}).known);
+    assert(!ScrobbleRule::fromJson(QJsonDocument::fromJson(R"({"fraction":0})").object()).known);
+    assert(!ScrobbleRule::fromJson(QJsonDocument::fromJson(R"({"fraction":1.5})").object()).known);
+
+    // A 100%/10s listener, to prove nothing here is pinned to the convention.
+    const ScrobbleRule strict
+        = ScrobbleRule::fromJson(QJsonDocument::fromJson(
+                                     R"({"fraction":1.0,"percent":100.0,"after_secs":10,)"
+                                     R"("no_duration_after_secs":10,"source":"user"})")
+                                     .object());
+    assert(strict.known);
+    assert(strict.qualifies(180000, 10000));
+    assert(!strict.qualifies(180000, 9000));
+}
 } // namespace
 
 int main()
@@ -198,6 +241,7 @@ int main()
     untaggedMbidsAreOmitted();
     timedLyricsAreToldApartFromPlainOnes();
     theScrobbleRuleIsWhicheverComesFirst();
+    theScrobbleRuleParsesTheLiveBody();
 
     printf("ok\n");
     return 0;
