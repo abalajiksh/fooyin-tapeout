@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.19)
 # as its submission_client_version) are both generated from it.
 project(
     tapeout
-    VERSION 0.4.0
+    VERSION 0.5.0
     DESCRIPTION "Tapedeck scrobbling for fooyin"
     HOMEPAGE_URL "https://github.com/abalajiksh/fooyin-tapeout"
     LANGUAGES CXX
@@ -62,8 +62,11 @@ option(TAPEOUT_TESTS "Build Tapeout's tests" OFF)
 if(TAPEOUT_TESTS)
     enable_testing()
 
-    add_executable(tapeout_roundtrip tests/roundtrip.cpp src/core/listen.cpp src/core/trackmedia.cpp)
-    target_link_libraries(tapeout_roundtrip PRIVATE Fooyin::Core Qt6::Core)
+    add_executable(
+        tapeout_roundtrip tests/roundtrip.cpp src/core/listen.cpp src/core/trackmedia.cpp
+                          src/core/tapedeckclient.cpp
+    )
+    target_link_libraries(tapeout_roundtrip PRIVATE Fooyin::Core Qt6::Core Qt6::Network)
     target_include_directories(
         tapeout_roundtrip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_BINARY_DIR}
     )

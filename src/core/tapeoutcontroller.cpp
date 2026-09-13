@@ -128,6 +128,8 @@ TapeoutController::TapeoutController(PlayerController* playerController, EngineC
                      [this](uint64_t /*ms*/) { updateNowPlaying(m_playerController->currentTrack()); });
 
     QObject::connect(m_client.get(), &TapedeckClient::listensSubmitted, this, &TapeoutController::handleSubmitResult);
+    QObject::connect(m_client.get(), &TapedeckClient::scrobbleRuleFetched, this,
+                     [this](const ScrobbleRule& rule) { m_rule = rule; });
 
     // Both, because fooyin routes a rating written to the file and a rating held
     // in the library through different signals, and a love should not depend on
@@ -163,8 +165,17 @@ void TapeoutController::reloadSettings()
     m_client->setServerUrl(m_settings->value<ServerUrl>());
     m_client->setToken(m_settings->value<Token>());
 
-    if(isEnabled() && !m_queue->isEmpty()) {
-        flush();
+    if(isEnabled()) {
+        // Re-read rather than cached from setup: it is a setting, changed from a
+        // settings screen at any time, and a value kept from a handshake goes
+        // quietly stale — which is the failure the endpoint exists to prevent.
+        // ponytail: startup and reconfiguration only. Add a periodic re-read if
+        // a fooyin left running for days is seen following a superseded rule.
+        m_client->fetchScrobbleRule();
+
+        if(!m_queue->isEmpty()) {
+            flush();
+        }
     }
 }
 
@@ -334,11 +345,22 @@ void TapeoutController::finishCurrent()
     // only ever an improvement, never a replacement.
     const auto listenedMs = std::max(m_lastListenedMs, static_cast<qint64>(m_playerController->currentTimeListened()));
 
-    if(m_currentPlayed) {
+    // Tapedeck's rule wins wherever it is known, because Tapedeck applies the
+    // same threshold in reverse: a track announced as now-playing and never
+    // scrobbled is written off as a skip. Disagreeing in one direction banks the
+    // listen *and* leaves a skip behind it; disagreeing in the other puts a
+    // listen on a permanent public record the listener's own setting says was
+    // never heard. fooyin's own threshold stands in only until the server has
+    // answered — never as a second opinion beside it.
+    const bool qualified = m_rule.known
+                             ? m_rule.qualifies(static_cast<qint64>(m_currentTrack.duration()), listenedMs)
+                             : m_currentPlayed;
+
+    if(qualified) {
         queueListen(m_currentTrack, m_currentStartedAt, listenedMs);
     }
     // A track leaving before it crossed the threshold was skipped. fooyin has no
-    // skip signal, so the absence of `trackPlayed` is the signal — and it is a
+    // skip signal, so falling short of the rule is the signal — and it is a
     // real one worth keeping: Tapedeck stores skips, excludes them from every
     // count, and has had no live source for them.
     else if(m_settings->value<Settings::Tapeout::SendSkips>()) {
@@ -480,6 +502,11 @@ void TapeoutController::handleTracksChanged(const TrackList& tracks)
             m_client->setLove(track.artist(), track.title(), isLoved);
         }
     }
+}
+
+ScrobbleRule TapeoutController::scrobbleRule() const
+{
+    return m_rule;
 }
 
 QString TapeoutController::currentOutputDevice() const

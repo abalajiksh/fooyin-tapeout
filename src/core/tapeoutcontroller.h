@@ -11,6 +11,7 @@
 #pragma once
 
 #include "listen.h"
+#include "tapedeckclient.h"
 
 #include <core/player/playerdefs.h>
 #include <core/track.h>
@@ -33,8 +34,6 @@ class SettingsManager;
 
 namespace Tapeout {
 class ListenQueue;
-class TapedeckClient;
-struct SubmitResult;
 
 /*!
  * Watches fooyin's player and reports to Tapedeck.
@@ -55,6 +54,9 @@ public:
     ~TapeoutController() override;
 
     [[nodiscard]] TapedeckClient* client() const;
+
+    //! The listener's own "when it counts" rule, or an unknown one before the server answers.
+    [[nodiscard]] ScrobbleRule scrobbleRule() const;
 
     /*!
      * The output fooyin is playing through, as Tapedeck knows it.
@@ -185,6 +187,15 @@ private:
 
     //! Album key to one track of it, awaiting its listen landing. See rememberArtwork.
     QHash<QString, Track> m_artworkPending;
+
+    /*!
+     * Tapedeck's threshold for a listen counting, once it has said.
+     *
+     * Held rather than asked per track: it decides every listen/skip call, and a
+     * request on each track end would be one per song for a number that changes
+     * when somebody opens a settings screen.
+     */
+    ScrobbleRule m_rule;
 };
 } // namespace Tapeout
 } // namespace Fooyin

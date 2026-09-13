@@ -66,6 +66,7 @@ private:
     void showChains(const QList<ChainInfo>& chains);
     void showBindings(const QList<BindingInfo>& bindings);
     void showDryRun(const DryRunInfo& info);
+    void showScrobbleRule(const ScrobbleRule& rule);
     //! The chain the picker is on, as a name. Empty means "let Tapedeck resolve it".
     [[nodiscard]] QString selectedChain() const;
 
@@ -94,6 +95,7 @@ private:
     QPushButton* m_previewButton;
     QLabel* m_previewResult;
     QLabel* m_bindingResult;
+    QLabel* m_ruleResult;
 
     //! Populated from `GET /api/v1/chains`, so the binding readout can name a chain by its id.
     QList<ChainInfo> m_chains;
@@ -123,6 +125,7 @@ TapeoutPageWidget::TapeoutPageWidget(TapeoutController* controller, SettingsMana
     , m_previewButton{new QPushButton(tr("Preview current track"), this)}
     , m_previewResult{new QLabel(this)}
     , m_bindingResult{new QLabel(this)}
+    , m_ruleResult{new QLabel(this)}
 {
     m_serverUrl->setPlaceholderText(u"https://tapedeck.example.com"_s);
 
@@ -136,6 +139,11 @@ TapeoutPageWidget::TapeoutPageWidget(TapeoutController* controller, SettingsMana
     m_previewResult->setWordWrap(true);
     m_previewResult->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_bindingResult->setWordWrap(true);
+    m_ruleResult->setWordWrap(true);
+    m_ruleResult->setToolTip(
+        tr("Tapedeck decides when a play counts, and applies the same threshold in reverse to\n"
+           "call anything short of it a skip. Tapeout follows this rather than fooyin's own\n"
+           "threshold, so the two cannot disagree and bank a listen and a skip for one play."));
 
     // Editable, because the picker is an improvement on free text and not a
     // replacement for it: a token with only `submit` cannot list chains, and a
@@ -217,6 +225,7 @@ TapeoutPageWidget::TapeoutPageWidget(TapeoutController* controller, SettingsMana
     checkLayout->addWidget(m_previewButton, row, 0);
     checkLayout->addWidget(m_previewResult, row++, 1);
     checkLayout->addWidget(m_bindingResult, row++, 0, 1, 2);
+    checkLayout->addWidget(m_ruleResult, row++, 0, 1, 2);
     checkLayout->setColumnStretch(1, 1);
 
     auto* layout = new QGridLayout(this);
@@ -246,6 +255,7 @@ TapeoutPageWidget::TapeoutPageWidget(TapeoutController* controller, SettingsMana
     QObject::connect(m_client, &TapedeckClient::chainsFetched, this, &TapeoutPageWidget::showChains);
     QObject::connect(m_client, &TapedeckClient::bindingsFetched, this, &TapeoutPageWidget::showBindings);
     QObject::connect(m_client, &TapedeckClient::dryRunFinished, this, &TapeoutPageWidget::showDryRun);
+    QObject::connect(m_client, &TapedeckClient::scrobbleRuleFetched, this, &TapeoutPageWidget::showScrobbleRule);
 }
 
 void TapeoutPageWidget::load()
@@ -275,6 +285,8 @@ void TapeoutPageWidget::load()
     // Both need `read` and answer empty without it, which the readouts handle.
     m_client->fetchChains();
     m_client->fetchBindings();
+    m_client->fetchScrobbleRule();
+    showScrobbleRule(m_controller->scrobbleRule());
 }
 
 void TapeoutPageWidget::apply()
@@ -497,6 +509,27 @@ void TapeoutPageWidget::showDryRun(const DryRunInfo& info)
     }
 
     m_previewResult->setText(parts.join(" · "_L1));
+}
+
+void TapeoutPageWidget::showScrobbleRule(const ScrobbleRule& rule)
+{
+    if(!rule.known) {
+        // Named as fooyin's rather than left blank: which rule is in force is
+        // the whole question, and "we could not ask" is a different answer from
+        // "it is the standard one".
+        m_ruleResult->setText(tr("Counts as a listen: fooyin's own threshold — Tapedeck has not been asked yet."));
+        return;
+    }
+
+    QString text = tr("Counts as a listen at %1.").arg(rule.describe());
+    if(rule.source == "default"_L1) {
+        text += " "_L1 + tr("That is your instance's standard.");
+    }
+    else if(rule.source == "user"_L1) {
+        text += " "_L1 + tr("Your own setting, not the %1% standard.").arg(rule.defaultPercent, 0, 'g', 3);
+    }
+
+    m_ruleResult->setText(text);
 }
 
 void TapeoutPageWidget::showResult(const TokenInfo& info)

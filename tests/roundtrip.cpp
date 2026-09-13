@@ -11,12 +11,18 @@
  */
 
 #include "core/listen.h"
+#include "core/tapedeckclient.h"
 #include "core/trackmedia.h"
 
 #include <QJsonObject>
+#include <QLoggingCategory>
 
 #include <cassert>
 #include <cstdio>
+
+// Defined in tapeoutplugin.cpp for the real build, which this binary does not
+// link — the client is here only for ScrobbleRule, not for its networking.
+Q_LOGGING_CATEGORY(TAPEOUT, "fy.tapeout")
 
 using namespace Qt::StringLiterals;
 using namespace Fooyin::Tapeout;
@@ -139,6 +145,42 @@ void timedLyricsAreToldApartFromPlainOnes()
     assert(!lyricsAreTimed(u"she said [12:30] and left"_s));
     assert(!lyricsAreTimed(u""_s));
 }
+/*
+ * The branch that decides listen versus skip. Tapedeck applies the same
+ * threshold in reverse, so getting this wrong does not merely mislabel one
+ * play: too late banks a listen *and* a skip for it, too early writes a listen
+ * the listener's own setting says never happened.
+ */
+void theScrobbleRuleIsWhicheverComesFirst()
+{
+    ScrobbleRule rule;
+    rule.known = true;
+    rule.fraction = 0.5;
+    rule.afterSecs = 240;
+    rule.noDurationAfterSecs = 240;
+
+    // A three-minute song: the fraction is what it can ever reach.
+    assert(!rule.qualifies(180000, 89000));
+    assert(rule.qualifies(180000, 90000));
+
+    // A forty-minute raga: four minutes arrives long before half of it, and
+    // reading the two as an AND would hold the listen back for twenty.
+    assert(rule.qualifies(2400000, 240000));
+    assert(!rule.qualifies(2400000, 239000));
+
+    // No length: the fraction is unanswerable and the flat number is all there is.
+    assert(!rule.qualifies(0, 239000));
+    assert(rule.qualifies(0, 240000));
+
+    // Nothing heard is never a listen, whatever the numbers say.
+    assert(!rule.qualifies(180000, 0));
+    assert(!rule.qualifies(0, 0));
+
+    // A listener who set 100% gets no early pass from the fraction.
+    ScrobbleRule strict{.known = true, .fraction = 1.0, .afterSecs = 3600, .noDurationAfterSecs = 3600};
+    assert(!strict.qualifies(180000, 179000));
+    assert(strict.qualifies(180000, 180000));
+}
 } // namespace
 
 int main()
@@ -148,6 +190,7 @@ int main()
     wireCarriesEveryMbid();
     untaggedMbidsAreOmitted();
     timedLyricsAreToldApartFromPlainOnes();
+    theScrobbleRuleIsWhicheverComesFirst();
 
     printf("ok\n");
     return 0;

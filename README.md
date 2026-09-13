@@ -14,7 +14,12 @@ exists for the part a generic ListenBrainz client cannot express — **how** you
 - Recording, release, **release-group**, release-track, **work** and artist/album-artist
   MusicBrainz ids, plus ISRC, where the file carries them. The work id is the one that ties
   every performance of the same piece together, which generic scrobblers drop entirely.
-
+- **Tapedeck's own scrobble threshold.** When a play counts is a per-user setting on the
+  server — half the track or four minutes is only the default, and it fits a three-minute
+  pop song far better than a forty-minute raga. Tapeout reads it and obeys it instead of
+  using fooyin's threshold, because Tapedeck applies the same number in reverse to decide
+  what was a *skip*: disagree in one direction and a single play banks a listen and a skip
+  both; disagree in the other and a listen lands that your own setting says never happened.
 - **Loves**, from your ratings. Star a track past the threshold and Tapedeck loves it — and
   mirrors that out to Last.fm and ListenBrainz. Drop it back and the love is withdrawn.
 

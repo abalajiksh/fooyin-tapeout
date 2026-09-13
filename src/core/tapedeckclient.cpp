@@ -14,6 +14,7 @@
 
 #include <core/network/networkaccessmanager.h>
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QHttpMultiPart>
 #include <QJsonArray>
@@ -81,6 +82,35 @@ QString errorFromBody(const QJsonObject& obj, const QString& fallback)
 } // namespace
 
 namespace Fooyin::Tapeout {
+bool ScrobbleRule::qualifies(qint64 durationMs, qint64 listenedMs) const
+{
+    if(listenedMs <= 0) {
+        return false;
+    }
+
+    // Whichever comes first, never both — see the note on the struct.
+    if(listenedMs >= static_cast<qint64>(afterSecs) * 1000) {
+        return true;
+    }
+
+    // No length means the fraction is unanswerable, so the flat number is the
+    // only rule left. The server names it separately rather than leaving the
+    // client to invent an answer for the case.
+    if(durationMs <= 0) {
+        return listenedMs >= static_cast<qint64>(noDurationAfterSecs) * 1000;
+    }
+
+    return static_cast<double>(listenedMs) >= static_cast<double>(durationMs) * fraction;
+}
+
+QString ScrobbleRule::describe() const
+{
+    const QString after = QStringLiteral("%1:%2").arg(afterSecs / 60).arg(afterSecs % 60, 2, 10, QChar{u'0'});
+    return QCoreApplication::translate("ScrobbleRule", "%1% or %2, whichever comes first")
+        .arg(fraction * 100.0, 0, 'g', 3)
+        .arg(after);
+}
+
 bool TokenInfo::hasScope(QLatin1StringView scope) const
 {
     // Exact matching, deliberately: Tapedeck treats `rewrite` as not granting
@@ -522,6 +552,52 @@ void TapedeckClient::fetchBindings()
         }
 
         Q_EMIT bindingsFetched(bindings);
+    });
+}
+
+void TapedeckClient::fetchScrobbleRule()
+{
+    if(!isConfigured()) {
+        return;
+    }
+
+    QNetworkReply* reply = get(endpoint("/api/v1/scrobble-settings"_L1));
+
+    QObject::connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if(status != 200) {
+            // Nothing is emitted, so fooyin's own threshold keeps standing in.
+            // A 500 here explicitly does *not* mean "they have not set one" —
+            // the server says so — and inventing the default would have us
+            // follow a rule it is not applying.
+            qCDebug(TAPEOUT) << "Could not read the scrobble rule:" << status;
+            return;
+        }
+
+        const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+
+        ScrobbleRule rule;
+        rule.known    = true;
+        rule.fraction = obj.value("fraction"_L1).toDouble(rule.fraction);
+        rule.afterSecs = obj.value("after_secs"_L1).toInt(rule.afterSecs);
+        // Equal to after_secs today, but read rather than assumed: it is named
+        // separately precisely so a client does not decide that for itself.
+        rule.noDurationAfterSecs = obj.value("no_duration_after_secs"_L1).toInt(rule.afterSecs);
+        rule.source              = obj.value("source"_L1).toString();
+        rule.defaultPercent      = obj.value("default_percent"_L1).toDouble(rule.defaultPercent);
+        rule.defaultAfterSecs    = obj.value("default_after_secs"_L1).toInt(rule.defaultAfterSecs);
+
+        // The server clamps before answering, so a sane value here is the one it
+        // actually uses. This guards only against a reply that omitted the field.
+        if(rule.fraction <= 0.0 || rule.fraction > 1.0) {
+            qCWarning(TAPEOUT) << "Ignoring an out-of-range scrobble fraction:" << rule.fraction;
+            return;
+        }
+
+        qCDebug(TAPEOUT) << "Scrobble rule:" << rule.describe() << "(" << rule.source << ")";
+        Q_EMIT scrobbleRuleFetched(rule);
     });
 }
 

@@ -73,6 +73,56 @@ struct TokenInfo
     [[nodiscard]] bool hasScope(QLatin1StringView scope) const;
 };
 
+/*!
+ * When a listen counts, as the server computes it.
+ *
+ * Not cosmetic agreement with the server: Tapedeck uses this same threshold to
+ * decide whether a track a client announced as now-playing and never scrobbled
+ * gets written off as a **skip**. Submitting later than the rule banks the
+ * listen *and* leaves a skip behind it; submitting earlier puts a listen on a
+ * permanent public record that the listener's own setting says was never heard.
+ *
+ * Half the track or four minutes is only the default — it is a per-user setting,
+ * because that convention fits a three-minute pop song far better than a
+ * forty-minute raga or a ninety-second hardcore track.
+ */
+struct ScrobbleRule
+{
+    /*!
+     * False until the server has answered, and fooyin's own played threshold
+     * stands in until it has.
+     *
+     * A guess is worse than a stand-in here: the defaults below are this
+     * plugin's idea of the convention, and the whole point of the endpoint is
+     * that the listener may have chosen otherwise.
+     */
+    bool known{false};
+
+    //! Share of the track that must have played, 0.05–1.0, already clamped by the server.
+    double fraction{0.5};
+    //! Seconds after which it counts regardless of the fraction.
+    int afterSecs{240};
+    //! The only rule left when the track's length is unknown — the fraction is unanswerable.
+    int noDurationAfterSecs{240};
+
+    //! `user` or `default` — whether the listener chose these numbers or inherited them.
+    QString source;
+    double defaultPercent{50.0};
+    int defaultAfterSecs{240};
+
+    /*!
+     * Whether a play of @a listenedMs out of @a durationMs counts.
+     *
+     * **Whichever comes first.** The server states `rule: either` rather than
+     * leaving it implied, because read as an AND it scrobbles a long track
+     * hours late and a short one never.
+     */
+    [[nodiscard]] bool qualifies(qint64 durationMs, qint64 listenedMs) const;
+
+    //! One line for a settings screen, e.g. "50% or 4:00, whichever comes first".
+    [[nodiscard]] QString describe() const;
+};
+
 //! One signal chain, for the picker. Tapedeck resolves a chain by *name*, so that is what is stored.
 struct ChainInfo
 {
@@ -214,6 +264,21 @@ public:
     void fetchBindings();
 
     /*!
+     * `GET /api/v1/scrobble-settings` — the listener's own "when it counts" rule.
+     *
+     * Takes a plain `submit` token rather than `read`, deliberately: it exists
+     * only to decide a submission, and gating it on `read` would make every
+     * scrobble client carry read access to the whole history to learn one
+     * number it is obliged to obey.
+     *
+     * Re-read when a session starts rather than cached from setup. It is a
+     * setting, changed from a settings screen at any time, so a value kept from
+     * a setup handshake goes quietly stale — which is the failure the endpoint
+     * exists to prevent.
+     */
+    void fetchScrobbleRule();
+
+    /*!
      * `POST /1/submit-listens?dry_run=1` — resolve a listen and throw it away.
      *
      * Genuinely read-only: it looks a device up rather than upserting one,
@@ -254,6 +319,8 @@ Q_SIGNALS:
     void chainsFetched(const QList<Fooyin::Tapeout::ChainInfo>& chains);
     void bindingsFetched(const QList<Fooyin::Tapeout::BindingInfo>& bindings);
     void dryRunFinished(const Fooyin::Tapeout::DryRunInfo& info);
+    //! Only ever emitted with a rule the server actually answered with.
+    void scrobbleRuleFetched(const Fooyin::Tapeout::ScrobbleRule& rule);
     //! Something for the human to type into Tapedeck, and how long they have.
     void pairingCode(const QString& userCode, int expiresInSecs);
     //! Exactly once per pairing. An empty @a token means @a error says why.
@@ -295,6 +362,7 @@ private:
 
 Q_DECLARE_METATYPE(Fooyin::Tapeout::TokenInfo)
 Q_DECLARE_METATYPE(Fooyin::Tapeout::SubmitResult)
+Q_DECLARE_METATYPE(Fooyin::Tapeout::ScrobbleRule)
 Q_DECLARE_METATYPE(Fooyin::Tapeout::ChainInfo)
 Q_DECLARE_METATYPE(Fooyin::Tapeout::BindingInfo)
 Q_DECLARE_METATYPE(Fooyin::Tapeout::DryRunInfo)
